@@ -3,15 +3,16 @@ package main
 import (
 	_ "embed"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/evertras/bubble-table/table"
 )
 
@@ -95,12 +96,12 @@ func (m Model) GetCurrentView() View {
 	}
 }
 
-func (m Model) View() string {
-	return m.GetCurrentView().View(m)
+func (m Model) View() tea.View {
+	return tea.NewView(m.GetCurrentView().View(m))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if msg, ok := msg.(tea.KeyMsg); ok {
+	if msg, ok := msg.(tea.KeyPressMsg); ok {
 		k := msg.String()
 		switch k {
 		case "q", "esc", "ctrl+c":
@@ -164,7 +165,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var updateControls bool
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		key := msg.String()
 		switch key {
 		case "u":
@@ -304,11 +305,16 @@ func (v HelpView) View(m Model) string {
 func newHelpView() (*HelpView, error) {
 	const width = 78
 
-	vp := viewport.New(width, 20)
+	vp := viewport.New(viewport.WithWidth(width), viewport.WithHeight(20))
 	vp.Style = lipgloss.NewStyle()
 
+	style := "dark"
+	if !lipgloss.HasDarkBackground(os.Stdin, os.Stdout) {
+		style = "light"
+	}
+
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
