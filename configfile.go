@@ -1,10 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"time"
+	"slices"
+	"strings"
 
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
@@ -84,50 +87,75 @@ func newPreset(wc *Webcam) (ConfigPreset, error) {
 	}, nil
 }
 
+// applyPreset sets the camera's controls to the values in preset.
+//
+// Some controls only accept writes while a related automatic mode is off. For
+// example, White Balance Temperature is inactive while White Balance,
+// Automatic is on. The driver reports this with V4L2_CTRL_FLAG_INACTIVE. So
+// applyPreset works in passes: each pass reads the current flags, sets the
+// boolean and menu controls (which hold the automatic modes) before the
+// integer controls, and skips controls that are inactive, read-only or
+// already at the preset value. Passes repeat while the previous one changed
+// something, because a change can make other controls active. Inactive
+// controls are left alone: their value is driven by the automatic mode.
+// Finally every control is read back, since some cameras silently drop
+// writes.
 func applyPreset(wc *Webcam, preset ConfigPreset) error {
-	presetValuesMap := make(map[ControlID]ConfigPresetValue)
+	want := make(map[ControlID]int32, len(preset.Values))
 	for _, v := range preset.Values {
-		presetValuesMap[v.ID] = v
+		want[v.ID] = v.Value
 	}
 
-	allControls := wc.getControls()
-	var boolAndMenuControls []Control
-	var integerControls []Control
-	for _, c := range allControls {
-		if c.Type == c_menu || c.Type == c_bool {
-			boolAndMenuControls = append(boolAndMenuControls, c)
-		} else {
-			integerControls = append(integerControls, c)
-		}
-	}
-
-	// my webcam is not correctly reporting locked controls so we try to set
-	// all controls a number of times hoping that whatever controls are locking
-	// other controls are resolved during the rety process.
-	for _, controls := range [][]Control{boolAndMenuControls, integerControls} {
-		todo := make(map[ControlID]any)
+	failed := make(map[ControlID]error)
+	// Every pass but the last sets at least one control, so len(want)+1
+	// passes are enough unless setting one control keeps resetting another.
+	for pass, changed := 0, true; changed && pass <= len(want); pass++ {
+		changed = false
+		clear(failed)
+		controls := wc.getControls()
+		// Stable so that controls keep ID order within each group.
+		slices.SortStableFunc(controls, func(a, b Control) int {
+			return cmp.Compare(controlSetOrder(a), controlSetOrder(b))
+		})
 		for _, c := range controls {
-			todo[c.ID] = struct{}{}
-		}
-		var retries int
-		for len(todo) > 0 && (retries < len(todo)*10) {
-			// rand.Shuffle(len(controls), func(i, j int) {
-			// 	controls[i], controls[j] = controls[j], controls[i]
-			// })
-			for _, v := range controls {
-				if _, ok := todo[v.ID]; !ok {
-					continue
-				}
-				if err := wc.SetControl(v.ID, presetValuesMap[v.ID].Value); err != nil {
-					time.Sleep(25 * time.Millisecond)
-					retries++
-					continue
-				}
-				time.Sleep(5 * time.Millisecond)
-				delete(todo, v.ID)
+			value, ok := want[c.ID]
+			if !ok || c.Value == value || c.IsReadOnly() || c.IsInactive() {
+				continue
 			}
+			if err := wc.SetControl(c.ID, value); err != nil {
+				failed[c.ID] = fmt.Errorf("%s: %w", c.Name, err)
+				continue
+			}
+			changed = true
 		}
 	}
 
-	return nil
+	// Some cameras accept a write without error and then drop the value, so
+	// read everything back.
+	for _, c := range wc.getControls() {
+		value, ok := want[c.ID]
+		if !ok || c.Value == value || c.IsReadOnly() || c.IsInactive() {
+			continue
+		}
+		if _, ok := failed[c.ID]; !ok {
+			failed[c.ID] = fmt.Errorf("%s: is %d after setting %d", c.Name, c.Value, value)
+		}
+	}
+
+	if len(failed) == 0 {
+		return nil
+	}
+	var msgs []string
+	for _, id := range slices.Sorted(maps.Keys(failed)) {
+		msgs = append(msgs, failed[id].Error())
+	}
+	return fmt.Errorf("could not set %s", strings.Join(msgs, "; "))
+}
+
+// controlSetOrder returns 0 for controls that applyPreset sets first.
+func controlSetOrder(c Control) int {
+	if c.Type == c_bool || c.Type == c_menu {
+		return 0
+	}
+	return 1
 }

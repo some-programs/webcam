@@ -39,6 +39,17 @@ func (c Control) IsBoolean() bool {
 	return c.Type == c_bool || (c.Min == 0 && c.Max == 1)
 }
 
+// IsInactive reports whether the control currently has no effect, typically
+// because an automatic mode such as auto exposure controls its value.
+func (c Control) IsInactive() bool {
+	return c.Flags&v4l2CtrlFlagInactive != 0
+}
+
+// IsReadOnly reports whether the control can not be set.
+func (c Control) IsReadOnly() bool {
+	return c.Flags&v4l2CtrlFlagReadOnly != 0
+}
+
 func (c Control) IsMenu() bool {
 	return c.Type == c_menu
 

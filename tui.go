@@ -238,9 +238,10 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			preset, ok := m.config.Presets[presetID]
 			if ok {
-				err := applyPreset(m.cam, preset)
-				if err != nil {
+				if err := applyPreset(m.cam, preset); err != nil {
 					m.lastError = err.Error()
+				} else {
+					m.lastError = ""
 				}
 				updateControls = true
 			}
