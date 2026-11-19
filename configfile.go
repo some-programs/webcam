@@ -118,7 +118,7 @@ func applyPreset(wc *Webcam, preset ConfigPreset) error {
 				if _, ok := todo[v.ID]; !ok {
 					continue
 				}
-				if err := wc.webcam.SetControl(v.ID, presetValuesMap[v.ID].Value); err != nil {
+				if err := wc.SetControl(v.ID, presetValuesMap[v.ID].Value); err != nil {
 					time.Sleep(25 * time.Millisecond)
 					retries++
 					continue

@@ -1,16 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 
-	"github.com/blackjack/webcam"
 	"github.com/evertras/bubble-table/table"
+	"golang.org/x/sys/unix"
 )
-
-type ControlID = webcam.ControlID
 
 // Control .
 type Control struct {
@@ -23,8 +22,6 @@ type Control struct {
 	Type  controlType
 	Flags uint32
 }
-
-// TODO temporary copy
 
 type controlType int
 
@@ -159,48 +156,68 @@ func (c Control) Row(barWidth int) table.Row {
 }
 
 func newCam(device string) (*Webcam, error) {
-	cam, err := webcam.Open(device)
+	fd, err := openDevice(device)
 	if err != nil {
 		return nil, err
 	}
-	return &Webcam{
-		webcam: cam,
-	}, nil
-
+	return &Webcam{fd: fd}, nil
 }
 
+// Webcam is an open V4L2 device.
 type Webcam struct {
-	webcam *webcam.Webcam
+	fd int
 }
 
 func (wc *Webcam) getControls() []Control {
-	controlsMap := wc.webcam.GetControls()
+	queried, err := queryControls(wc.fd)
+	if err != nil {
+		panic(err)
+	}
 	var controls []Control
-	for ci, c := range controlsMap {
-		value, err := wc.webcam.GetControl(ci)
+	for _, q := range queried {
+		value, err := wc.GetControl(q.ID)
 		if err != nil {
 			panic(err)
 		}
+		var typ controlType
+		switch q.Type {
+		case v4l2CtrlTypeBoolean:
+			typ = c_bool
+		case v4l2CtrlTypeMenu:
+			typ = c_menu
+		default:
+			typ = c_int
+		}
 		controls = append(controls,
 			Control{
-				ID:    ci,
-				Name:  c.Name,
-				Min:   c.Min,
-				Max:   c.Max,
-				Step:  c.Step,
-				Type:  controlType(c.Type),
+				ID:    q.ID,
+				Name:  cString(q.Name[:]),
+				Min:   int32(q.Minimum),
+				Max:   int32(q.Maximum),
+				Step:  int32(q.Step),
+				Type:  typ,
+				Flags: q.Flags,
 				Value: value,
 			})
 	}
-	sort.Slice(controls, func(i, j int) bool {
-		return controls[i].ID < controls[j].ID
+	slices.SortFunc(controls, func(a, b Control) int {
+		return cmp.Compare(a.ID, b.ID)
 	})
 	return controls
 }
 
-func (wc *Webcam) Close() error {
-	return wc.webcam.Close()
+// GetControl returns the current value of control id.
+func (wc *Webcam) GetControl(id ControlID) (int32, error) {
+	return getControl(wc.fd, id)
+}
 
+// SetControl sets control id to value.
+func (wc *Webcam) SetControl(id ControlID, value int32) error {
+	return setControl(wc.fd, id, value)
+}
+
+func (wc *Webcam) Close() error {
+	return unix.Close(wc.fd)
 }
 
 func percentBar(width int, percent float64) string {

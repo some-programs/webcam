@@ -184,7 +184,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err == nil {
 				if m.current.IsMenu() || m.current.IsBoolean() {
-					if err := m.cam.webcam.SetControl(m.current.ID, int32(v)); err != nil {
+					if err := m.cam.SetControl(m.current.ID, int32(v)); err != nil {
 						m.lastError = err.Error()
 					} else {
 						m.lastError = ""
@@ -192,7 +192,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				} else {
 					percent := float64(v) / 10
-					if err := m.cam.webcam.SetControl(m.current.ID, controlValue(m.current, percent)); err != nil {
+					if err := m.cam.SetControl(m.current.ID, controlValue(m.current, percent)); err != nil {
 						m.lastError = err.Error()
 					} else {
 						m.lastError = ""
@@ -202,7 +202,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "left", "h":
-			if err := m.cam.webcam.SetControl(m.current.ID, m.current.GetValueDecreasePercent()); err != nil {
+			if err := m.cam.SetControl(m.current.ID, m.current.GetValueDecreasePercent()); err != nil {
 				m.lastError = err.Error()
 			} else {
 				m.lastError = ""
@@ -210,7 +210,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			updateControls = true
 
 		case "right", "l":
-			if err := m.cam.webcam.SetControl(m.current.ID, m.current.GetValueIncreasePercent()); err != nil {
+			if err := m.cam.SetControl(m.current.ID, m.current.GetValueIncreasePercent()); err != nil {
 				m.lastError = err.Error()
 			} else {
 				m.lastError = ""
@@ -218,7 +218,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			updateControls = true
 
 		case "y":
-			if err := m.cam.webcam.SetControl(m.current.ID, m.current.GetValueDecreseStep()); err != nil {
+			if err := m.cam.SetControl(m.current.ID, m.current.GetValueDecreseStep()); err != nil {
 				m.lastError = err.Error()
 			} else {
 				m.lastError = ""
@@ -226,7 +226,7 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 			updateControls = true
 
 		case "o":
-			if err := m.cam.webcam.SetControl(m.current.ID, m.current.GetValueIncreaseStep()); err != nil {
+			if err := m.cam.SetControl(m.current.ID, m.current.GetValueIncreaseStep()); err != nil {
 				m.lastError = err.Error()
 			} else {
 				m.lastError = ""
