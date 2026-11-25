@@ -94,23 +94,28 @@ func newPreset(wc *Webcam) (ConfigPreset, error) {
 // Automatic is on. The driver reports this with V4L2_CTRL_FLAG_INACTIVE. So
 // applyPreset works in passes: each pass reads the current flags, sets the
 // boolean and menu controls (which hold the automatic modes) before the
-// integer controls, and skips controls that are inactive, read-only or
-// already at the preset value. Passes repeat while the previous one changed
-// something, because a change can make other controls active. Inactive
-// controls are left alone: their value is driven by the automatic mode.
-// Finally every control is read back, since some cameras silently drop
-// writes.
+// integer controls, and skips controls that are inactive or read-only. Passes
+// repeat while the previous one set something, because a change can make
+// other controls active. Inactive controls are left alone: their value is
+// driven by the automatic mode. Finally every control is read back, since
+// some cameras silently drop writes.
+//
+// Every control is written once even if it already reports the preset's
+// value. Cameras do not always report what they use: some keep returning the
+// last manual exposure time while auto exposure runs, so after switching back
+// to manual the reported value can match the preset while the camera uses
+// whatever exposure the automatic mode last chose.
 func applyPreset(wc *Webcam, preset ConfigPreset) error {
 	want := make(map[ControlID]int32, len(preset.Values))
 	for _, v := range preset.Values {
 		want[v.ID] = v.Value
 	}
 
+	set := make(map[ControlID]bool, len(want))
 	failed := make(map[ControlID]error)
-	// Every pass but the last sets at least one control, so len(want)+1
-	// passes are enough unless setting one control keeps resetting another.
-	for pass, changed := 0, true; changed && pass <= len(want); pass++ {
-		changed = false
+	// Each pass but the last sets at least one more control, so this ends.
+	for progress := true; progress; {
+		progress = false
 		clear(failed)
 		controls := wc.getControls()
 		// Stable so that controls keep ID order within each group.
@@ -119,14 +124,15 @@ func applyPreset(wc *Webcam, preset ConfigPreset) error {
 		})
 		for _, c := range controls {
 			value, ok := want[c.ID]
-			if !ok || c.Value == value || c.IsReadOnly() || c.IsInactive() {
+			if !ok || set[c.ID] || c.IsReadOnly() || c.IsInactive() {
 				continue
 			}
 			if err := wc.SetControl(c.ID, value); err != nil {
 				failed[c.ID] = fmt.Errorf("%s: %w", c.Name, err)
 				continue
 			}
-			changed = true
+			set[c.ID] = true
+			progress = true
 		}
 	}
 
