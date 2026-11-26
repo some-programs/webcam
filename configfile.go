@@ -2,10 +2,11 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -23,6 +24,9 @@ type ConfigFile struct {
 	// camera. They are moved to the first camera opened that has no
 	// presets of its own.
 	LegacyPresets map[string]ConfigPreset `yaml:"presets,omitempty"`
+
+	// path is the file the config was loaded from.
+	path string
 }
 
 // CameraConfig holds the settings of one camera model.
@@ -62,41 +66,49 @@ type ConfigPresetValue struct {
 	Value int32     `yaml:"value"`
 }
 
-func LoadConfigFile() (ConfigFile, error) {
-	configFilePath, err := xdg.ConfigFile("webcam/config.yml")
+// defaultConfigPath returns $XDG_CONFIG_HOME/webcam/config.yml, creating
+// its directory if needed.
+func defaultConfigPath() (string, error) {
+	path, err := xdg.ConfigFile("webcam/config.yml")
 	if err != nil {
-		return ConfigFile{}, fmt.Errorf("can't get config file path: %w", err)
+		return "", fmt.Errorf("can't get config file path: %w", err)
 	}
-
-	configDir := filepath.Dir(configFilePath)
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		return ConfigFile{}, fmt.Errorf("could not create directory for config file: %w", err)
-	}
-
-	var config ConfigFile
-
-	configData, err := os.ReadFile(configFilePath)
-	if err == nil {
-		if err := yaml.Unmarshal(configData, &config); err != nil {
-			return ConfigFile{}, fmt.Errorf("error parsing config gile: %w", err)
-		}
-	}
-	return config, nil
-
+	return path, nil
 }
 
-func SaveConfigFile(config ConfigFile) error {
-	configFilePath, err := xdg.ConfigFile("webcam/config.yml")
-	if err != nil {
-		return fmt.Errorf("can't get config file path: %w", err)
+// LoadConfigFile reads the config file at path, or at the default path if
+// path is empty. A missing file at the default path gives an empty config.
+func LoadConfigFile(path string) (ConfigFile, error) {
+	explicit := path != ""
+	if !explicit {
+		var err error
+		if path, err = defaultConfigPath(); err != nil {
+			return ConfigFile{}, err
+		}
 	}
 
+	config := ConfigFile{path: path}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) && !explicit {
+		return config, nil
+	}
+	if err != nil {
+		return ConfigFile{}, fmt.Errorf("could not read config file: %w", err)
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return ConfigFile{}, fmt.Errorf("error parsing config file %s: %w", path, err)
+	}
+	return config, nil
+}
+
+// SaveConfigFile writes config to the file it was loaded from.
+func SaveConfigFile(config ConfigFile) error {
 	data, err := yaml.Marshal(&config)
 	if err != nil {
 		return fmt.Errorf("could not render config file: %w", err)
 	}
-	if err := os.WriteFile(configFilePath, data, 0700); err != nil {
-		return fmt.Errorf("could not write confi gile: %w", err)
+	if err := os.WriteFile(config.path, data, 0600); err != nil {
+		return fmt.Errorf("could not write config file: %w", err)
 	}
 	return nil
 }
