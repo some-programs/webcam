@@ -8,8 +8,8 @@ require (
 	charm.land/lipgloss/v2 v2.1.1
 	github.com/adrg/xdg v0.5.3
 	github.com/charmbracelet/x/ansi v0.11.10
+	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/sys v0.50.0
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

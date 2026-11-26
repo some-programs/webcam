@@ -12,6 +12,7 @@ package main
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -104,12 +105,8 @@ func openTestCam(t *testing.T) *Webcam {
 // active and writable but does not have the preset's value.
 func checkPresetApplied(t *testing.T, wc *Webcam, preset ConfigPreset, when string) {
 	t.Helper()
-	want := make(map[ControlID]int32)
-	for _, v := range preset.Values {
-		want[v.ID] = v.Value
-	}
 	for _, c := range wc.getControls() {
-		v, ok := want[c.ID]
+		v, ok := preset[c.Name]
 		if !ok || c.IsInactive() || c.IsReadOnly() {
 			continue
 		}
@@ -172,9 +169,9 @@ func presetWith(t *testing.T, wc *Webcam, overrides map[ControlID]int32) ConfigP
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, v := range p.Values {
-		if o, ok := overrides[v.ID]; ok {
-			p.Values[i].Value = o
+	for _, c := range wc.getControls() {
+		if o, ok := overrides[c.ID]; ok {
+			p[c.Name] = o
 		}
 	}
 	return p
@@ -473,8 +470,9 @@ func TestDeviceApplyPresetRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDeviceApplyPresetPartial checks that controls missing from a preset,
-// and controls the camera doesn't have, are left alone.
+// TestDeviceApplyPresetPartial checks that controls missing from a preset
+// are left alone, and that names the camera has no control for are reported
+// after the other controls are set.
 func TestDeviceApplyPresetPartial(t *testing.T) {
 	wc := openTestCam(t)
 	before := wc.getControls()
@@ -492,12 +490,11 @@ func TestDeviceApplyPresetPartial(t *testing.T) {
 		t.Skip("no writable integer control")
 	}
 
-	preset := ConfigPreset{Values: []ConfigPresetValue{
-		{ID: target.ID, Value: value},
-		{ID: 0x00980fff, Value: 1}, // not a control on the camera
-	}}
-	if err := applyPreset(wc, preset); err != nil {
-		t.Fatal(err)
+	const unknown = "No Such Control"
+	preset := ConfigPreset{target.Name: value, unknown: 1}
+	err := applyPreset(wc, preset)
+	if err == nil || !strings.Contains(err.Error(), unknown) {
+		t.Errorf("applyPreset error = %v, want one naming %q", err, unknown)
 	}
 	for _, c := range before {
 		got := mustControl(t, wc, c.ID)

@@ -11,19 +11,14 @@ import (
 	"strings"
 
 	"github.com/adrg/xdg"
-	"gopkg.in/yaml.v3"
+	"github.com/pelletier/go-toml/v2"
 )
 
-// ConfigFile .
+// ConfigFile is the config file, config.toml.
 type ConfigFile struct {
 	// Cameras holds the settings of each camera model, keyed by the name
 	// its driver reports, such as "C922 Pro Stream Webcam".
-	Cameras map[string]*CameraConfig `yaml:"cameras,omitempty"`
-
-	// LegacyPresets are presets saved before presets were kept per
-	// camera. They are moved to the first camera opened that has no
-	// presets of its own.
-	LegacyPresets map[string]ConfigPreset `yaml:"presets,omitempty"`
+	Cameras map[string]*CameraConfig `toml:"cameras,omitempty"`
 
 	// path is the file the config was loaded from.
 	path string
@@ -31,9 +26,12 @@ type ConfigFile struct {
 
 // CameraConfig holds the settings of one camera model.
 type CameraConfig struct {
-	// Presets are keyed by the number of the function key they are on.
-	Presets map[string]ConfigPreset `yaml:"presets"`
+	// Presets are keyed by the function key they are on, "F1" to "F12".
+	Presets map[string]ConfigPreset `toml:"presets"`
 }
+
+// ConfigPreset maps control names, such as "Brightness", to values.
+type ConfigPreset map[string]int32
 
 // CameraPresets returns the presets of camera, which can be changed in place.
 func (c *ConfigFile) CameraPresets(camera string) map[string]ConfigPreset {
@@ -45,31 +43,16 @@ func (c *ConfigFile) CameraPresets(camera string) map[string]ConfigPreset {
 		cc = &CameraConfig{}
 		c.Cameras[camera] = cc
 	}
-	if len(cc.Presets) == 0 && len(c.LegacyPresets) > 0 {
-		cc.Presets = c.LegacyPresets
-		c.LegacyPresets = nil
-	}
 	if cc.Presets == nil {
 		cc.Presets = make(map[string]ConfigPreset)
 	}
 	return cc.Presets
 }
 
-// ConfigPreset .
-type ConfigPreset struct {
-	Values []ConfigPresetValue `yaml:"values"`
-}
-
-// ConfigPresetValue .
-type ConfigPresetValue struct {
-	ID    ControlID `yaml:"id"`
-	Value int32     `yaml:"value"`
-}
-
-// defaultConfigPath returns $XDG_CONFIG_HOME/webcam/config.yml, creating
+// defaultConfigPath returns $XDG_CONFIG_HOME/webcam/config.toml, creating
 // its directory if needed.
 func defaultConfigPath() (string, error) {
-	path, err := xdg.ConfigFile("webcam/config.yml")
+	path, err := xdg.ConfigFile("webcam/config.toml")
 	if err != nil {
 		return "", fmt.Errorf("can't get config file path: %w", err)
 	}
@@ -95,7 +78,7 @@ func LoadConfigFile(path string) (ConfigFile, error) {
 	if err != nil {
 		return ConfigFile{}, fmt.Errorf("could not read config file: %w", err)
 	}
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := toml.Unmarshal(data, &config); err != nil {
 		return ConfigFile{}, fmt.Errorf("error parsing config file %s: %w", path, err)
 	}
 	return config, nil
@@ -103,7 +86,7 @@ func LoadConfigFile(path string) (ConfigFile, error) {
 
 // SaveConfigFile writes config to the file it was loaded from.
 func SaveConfigFile(config ConfigFile) error {
-	data, err := yaml.Marshal(&config)
+	data, err := toml.Marshal(&config)
 	if err != nil {
 		return fmt.Errorf("could not render config file: %w", err)
 	}
@@ -113,28 +96,21 @@ func SaveConfigFile(config ConfigFile) error {
 	return nil
 }
 
+// newPreset returns a preset with the current value of every control.
 func newPreset(wc *Webcam) (ConfigPreset, error) {
-	var values []ConfigPresetValue
-
-	controls := wc.getControls()
-	for _, c := range controls {
-		values = append(values, ConfigPresetValue{
-			ID:    c.ID,
-			Value: c.Value,
-		})
-
+	p := make(ConfigPreset)
+	for _, c := range wc.getControls() {
+		p[c.Name] = c.Value
 	}
-	return ConfigPreset{
-		Values: values,
-	}, nil
+	return p, nil
 }
 
 // defaultPreset returns a preset that sets every control to its default
 // value.
 func defaultPreset(wc *Webcam) ConfigPreset {
-	var p ConfigPreset
+	p := make(ConfigPreset)
 	for _, c := range wc.getControls() {
-		p.Values = append(p.Values, ConfigPresetValue{ID: c.ID, Value: c.Default})
+		p[c.Name] = c.Default
 	}
 	return p
 }
@@ -157,10 +133,17 @@ func defaultPreset(wc *Webcam) ConfigPreset {
 // last manual exposure time while auto exposure runs, so after switching back
 // to manual the reported value can match the preset while the camera uses
 // whatever exposure the automatic mode last chose.
+//
+// Controls are matched by name. Names in preset that the camera has no
+// control for are reported in the error, after the other controls are set.
 func applyPreset(wc *Webcam, preset ConfigPreset) error {
-	want := make(map[ControlID]int32, len(preset.Values))
-	for _, v := range preset.Values {
-		want[v.ID] = v.Value
+	want := make(map[ControlID]int32, len(preset))
+	unknown := maps.Clone(preset)
+	for _, c := range wc.getControls() {
+		if value, ok := preset[c.Name]; ok {
+			want[c.ID] = value
+			delete(unknown, c.Name)
+		}
 	}
 
 	set := make(map[ControlID]bool, len(want))
@@ -200,12 +183,15 @@ func applyPreset(wc *Webcam, preset ConfigPreset) error {
 		}
 	}
 
-	if len(failed) == 0 {
-		return nil
-	}
 	var msgs []string
 	for _, id := range slices.Sorted(maps.Keys(failed)) {
 		msgs = append(msgs, failed[id].Error())
+	}
+	for _, name := range slices.Sorted(maps.Keys(unknown)) {
+		msgs = append(msgs, fmt.Sprintf("%s: no such control", name))
+	}
+	if len(msgs) == 0 {
+		return nil
 	}
 	return fmt.Errorf("could not set %s", strings.Join(msgs, "; "))
 }

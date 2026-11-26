@@ -336,18 +336,18 @@ func (m Model) statusLine(width int) string {
 
 // presetsView lists the function keys that hold a preset.
 func (m Model) presetsView() string {
-	ids := slices.SortedFunc(maps.Keys(m.presets), func(a, b string) int {
-		ai, _ := strconv.Atoi(a)
-		bi, _ := strconv.Atoi(b)
-		return cmp.Or(cmp.Compare(ai, bi), cmp.Compare(a, b))
+	// Sort F2 before F10.
+	number := func(name string) int {
+		n, _ := strconv.Atoi(strings.TrimPrefix(name, "F"))
+		return n
+	}
+	names := slices.SortedFunc(maps.Keys(m.presets), func(a, b string) int {
+		return cmp.Or(cmp.Compare(number(a), number(b)), cmp.Compare(a, b))
 	})
-	if len(ids) == 0 {
+	if len(names) == 0 {
 		return faintStyle.Render("no presets")
 	}
-	for i, id := range ids {
-		ids[i] = "F" + id
-	}
-	return faintStyle.Render("presets ") + presetStyle.Render(strings.Join(ids, " "))
+	return faintStyle.Render("presets ") + presetStyle.Render(strings.Join(names, " "))
 }
 
 func (m Model) helpView(width int) string {

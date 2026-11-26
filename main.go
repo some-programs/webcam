@@ -11,8 +11,8 @@ import (
 
 var (
 	device     = flag.String("dev", "/dev/video0", "video `device` to configure")
-	presetFlag = flag.String("preset", "", "apply preset `n` (1-12, or F1-F12) and exit instead of starting the UI")
-	configPath = flag.String("config", "", "config `file` (default $XDG_CONFIG_HOME/webcam/config.yml)")
+	presetFlag = flag.String("preset", "", "apply preset `F1`-F12 and exit instead of starting the UI")
+	configPath = flag.String("config", "", "config `file` (default $XDG_CONFIG_HOME/webcam/config.toml)")
 )
 
 func main() {
@@ -53,23 +53,15 @@ func run() error {
 		return applyPresetFlag(cam, configFile, *presetFlag)
 	}
 
-	if len(configFile.LegacyPresets) > 0 {
-		// Save the presets as this camera's now, so that they are not
-		// moved to another camera later.
-		configFile.CameraPresets(cam.Card)
-		if err := SaveConfigFile(configFile); err != nil {
-			return err
-		}
-	}
-
 	_, err = tea.NewProgram(NewModel(cam, configFile)).Run()
 	return err
 }
 
-// applyPresetFlag applies the preset named by the -preset flag to cam.
+// applyPresetFlag applies the preset named by the -preset flag to cam. The
+// name may leave out the F, as in "1".
 func applyPresetFlag(cam *Webcam, config ConfigFile, name string) error {
-	id := strings.TrimLeft(name, "fF")
-	preset, ok := config.CameraPresets(cam.Card)[id]
+	name = "F" + strings.TrimLeft(name, "fF")
+	preset, ok := config.CameraPresets(cam.Card)[name]
 	if !ok {
 		return fmt.Errorf("no preset %s saved for %s", name, cam.Card)
 	}

@@ -44,13 +44,21 @@ adjust it.
 ## Presets
 
 F1-F12 load a preset and alt+F1-F12 save the current settings as one. Presets
-are stored per camera model in `$XDG_CONFIG_HOME/webcam/config.yml`.
+are stored per camera model in `$XDG_CONFIG_HOME/webcam/config.toml`, by
+control name, so they are easy to edit by hand. A preset only needs the
+controls it should change:
+
+```toml
+[cameras."C922 Pro Stream Webcam".presets.F2]
+"Focus, Automatic Continuous" = 0
+"Focus, Absolute" = 40
+```
 
 To apply a preset without the UI, for example from a login script, use
 `-preset`:
 
 ```
-webcam -dev /dev/video0 -preset 1
+webcam -dev /dev/video0 -preset F1
 ```
 
 Most cameras go back to their default settings when they are plugged in. A
@@ -60,5 +68,5 @@ and product IDs with `lsusb`, then put a rule like this in
 `/etc/udev/rules.d/99-webcam.rules`:
 
 ```
-ACTION=="add", SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085c", RUN+="/usr/local/bin/webcam -dev $devnode -preset 1 -config /home/you/.config/webcam/config.yml"
+ACTION=="add", SUBSYSTEM=="video4linux", ATTR{index}=="0", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085c", RUN+="/usr/local/bin/webcam -dev $devnode -preset F1 -config /home/you/.config/webcam/config.toml"
 ```

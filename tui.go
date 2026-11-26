@@ -339,23 +339,23 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		err := applyPreset(m.cam, defaultPreset(m.cam))
 		return m.report(err, "all controls reset to defaults"), true
 	case key.Matches(msg, keys.LoadPreset):
-		id := strings.TrimPrefix(msg.String(), "f")
-		preset, ok := m.presets[id]
+		name := strings.ToUpper(msg.String())
+		preset, ok := m.presets[name]
 		if !ok {
-			return m.setStatus(fmt.Sprintf("no preset saved on F%s", id), true), true
+			return m.setStatus("no preset saved on "+name, true), true
 		}
-		return m.report(applyPreset(m.cam, preset), "loaded preset F"+id), true
+		return m.report(applyPreset(m.cam, preset), "loaded preset "+name), true
 	case key.Matches(msg, keys.SavePreset):
-		id := strings.TrimPrefix(msg.String(), "alt+f")
+		name := strings.ToUpper(strings.TrimPrefix(msg.String(), "alt+"))
 		preset, err := newPreset(m.cam)
 		if err != nil {
 			return m.report(err, ""), true
 		}
-		m.presets[id] = preset
+		m.presets[name] = preset
 		if err := SaveConfigFile(m.config); err != nil {
 			return m.report(err, ""), true
 		}
-		return m.report(nil, "saved preset F"+id), true
+		return m.report(nil, "saved preset "+name), true
 	}
 
 	c, ok := m.current()

@@ -1,49 +1,33 @@
 package main
 
 import (
+	"maps"
+	"path/filepath"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
-func TestCameraPresetsMovesLegacyPresets(t *testing.T) {
-	var config ConfigFile
-	data := []byte(`
-presets:
-    "1":
-        values:
-            - id: 9963776
-              value: 128
-`)
-	if err := yaml.Unmarshal(data, &config); err != nil {
+func TestConfigFileRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	config := ConfigFile{path: path}
+	config.CameraPresets("C922 Pro Stream Webcam")["F1"] = ConfigPreset{
+		"Brightness":               128,
+		"White Balance, Automatic": 0,
+		"Pan, Absolute":            -3600,
+	}
+	if err := SaveConfigFile(config); err != nil {
 		t.Fatal(err)
 	}
 
-	presets := config.CameraPresets("cam A")
-	if got := presets["1"].Values; len(got) != 1 || got[0].Value != 128 {
-		t.Fatalf("cam A presets = %v, want the legacy preset", presets)
-	}
-	if config.LegacyPresets != nil {
-		t.Errorf("LegacyPresets = %v after moving them, want nil", config.LegacyPresets)
-	}
-	if other := config.CameraPresets("cam B"); len(other) != 0 {
-		t.Errorf("cam B presets = %v, want none", other)
-	}
-
-	// Presets added through the returned map are saved.
-	presets["2"] = ConfigPreset{}
-	out, err := yaml.Marshal(&config)
+	loaded, err := LoadConfigFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reloaded ConfigFile
-	if err := yaml.Unmarshal(out, &reloaded); err != nil {
-		t.Fatal(err)
+	got := loaded.CameraPresets("C922 Pro Stream Webcam")["F1"]
+	want := config.CameraPresets("C922 Pro Stream Webcam")["F1"]
+	if !maps.Equal(got, want) {
+		t.Errorf("loaded preset = %v, want %v", got, want)
 	}
-	if got := len(reloaded.CameraPresets("cam A")); got != 2 {
-		t.Errorf("cam A has %d presets after saving and loading, want 2\n%s", got, out)
-	}
-	if reloaded.LegacyPresets != nil {
-		t.Errorf("saved config still has legacy presets:\n%s", out)
+	if other := loaded.CameraPresets("Other Camera"); len(other) != 0 {
+		t.Errorf("Other Camera presets = %v, want none", other)
 	}
 }
