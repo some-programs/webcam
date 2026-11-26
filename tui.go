@@ -1,47 +1,108 @@
 package main
 
 import (
-	_ "embed"
+	"cmp"
 	"fmt"
-	"log"
-	"os"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/viewport"
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/evertras/bubble-table/table"
 )
 
-//go:generate go run github.com/dmarkham/enumer@v1.5.8 -type=ViewType -trimprefix ViewType
-type ViewType int
-
-const (
-	ViewTypeMain ViewType = iota
-	ViewTypeHelp
-)
-
-type View interface {
-	Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd)
-	View(m Model) string
+// keyMap holds the main view's key bindings. Moving the cursor and filtering
+// are handled by the table; their bindings here are only for the help.
+type keyMap struct {
+	Move       key.Binding
+	Filter     key.Binding
+	Adjust     key.Binding
+	Increase   key.Binding
+	Decrease   key.Binding
+	StepUp     key.Binding
+	StepDown   key.Binding
+	QuickSet   key.Binding
+	Reset      key.Binding
+	ResetAll   key.Binding
+	LoadPreset key.Binding
+	SavePreset key.Binding
+	Help       key.Binding
+	Quit       key.Binding
 }
 
-func NewModel(cam *Webcam, configFile ConfigFile) Model {
+func fKeys(prefix string) []string {
+	var keys []string
+	for i := 1; i <= 12; i++ {
+		keys = append(keys, fmt.Sprintf("%sf%d", prefix, i))
+	}
+	return keys
+}
 
+var keys = keyMap{
+	Move:       key.NewBinding(key.WithKeys("up", "down", "k", "j"), key.WithHelp("↑/↓", "select")),
+	Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+	Adjust:     key.NewBinding(key.WithKeys("left", "right", "h", "l"), key.WithHelp("←/→", "adjust")),
+	Increase:   key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "increase")),
+	Decrease:   key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "decrease")),
+	StepUp:     key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "step up")),
+	StepDown:   key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "step down")),
+	QuickSet:   key.NewBinding(key.WithKeys("`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"), key.WithHelp("`…0", "set 0-100% / menu item")),
+	Reset:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "reset to default")),
+	ResetAll:   key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "reset all")),
+	LoadPreset: key.NewBinding(key.WithKeys(fKeys("")...), key.WithHelp("F1-F12", "load preset")),
+	SavePreset: key.NewBinding(key.WithKeys(fKeys("alt+")...), key.WithHelp("alt+F1-F12", "save preset")),
+	Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more")),
+	Quit:       key.NewBinding(key.WithKeys("q", "esc", "ctrl+c"), key.WithHelp("q", "quit")),
+}
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Adjust, k.StepDown, k.StepUp, k.Reset, k.Filter, k.Help, k.Quit}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Move, k.Filter, k.Help, k.Quit},
+		{k.Increase, k.Decrease, k.StepUp, k.StepDown, k.QuickSet},
+		{k.Reset, k.ResetAll, k.LoadPreset, k.SavePreset},
+	}
+}
+
+// tableKeyMap is the table's default key map without the bindings that
+// clash with ours.
+func tableKeyMap() table.KeyMap {
+	km := table.DefaultKeyMap()
+	km.PageDown.SetKeys("pgdown")
+	km.PageUp.SetKeys("pgup")
+	km.RowSelectToggle.Unbind()
+	return km
+}
+
+const (
+	statusInfoDuration  = 3 * time.Second
+	statusErrorDuration = 6 * time.Second
+)
+
+var (
+	headerStyle      = lipgloss.NewStyle().Bold(true)
+	faintStyle       = lipgloss.NewStyle().Faint(true)
+	statusInfoStyle  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
+	statusErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)).Bold(true)
+	presetStyle      = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(5))
+	highlightStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(5))
+	errorHighlight   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(1))
+)
+
+func NewModel(cam *Webcam, configFile ConfigFile) Model {
 	barWidth := 40
 	controls := cam.getControls()
 	var rows []table.Row
 	for _, c := range controls {
 		rows = append(rows, c.Row(barWidth))
-	}
-
-	helpView, err := newHelpView()
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	return Model{
@@ -54,73 +115,66 @@ func NewModel(cam *Webcam, configFile ConfigFile) Model {
 			table.NewColumn("max", "Max", 6),
 			table.NewColumn("state", "", 8),
 		}).WithRows(rows).
-			HighlightStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(5))).
+			WithKeyMap(tableKeyMap()).
+			HighlightStyle(highlightStyle).
 			Filtered(true).
-			// WithPageSize(10).
-			// BorderRounded().
-			// SelectableRows(true).
 			Focused(true),
-		cam:         cam,
-		current:     controls[0],
-		barWidth:    barWidth,
-		help:        help.New(),
-		config:      configFile,
-		currentView: ViewTypeMain,
-		mainView:    &MainView{},
-		helpView:    helpView,
+		cam:      cam,
+		current:  controls[0],
+		barWidth: barWidth,
+		help:     help.New(),
+		config:   configFile,
 	}
 }
 
 type Model struct {
-	table             table.Model
-	current           Control
-	cam               *Webcam
-	lastSelectedEvent table.UserEventRowSelectToggled
-	lastError         string
-	barWidth          int
-	help              help.Model
-	config            ConfigFile
-	quitting          bool
-	mainView          *MainView
-	helpView          *HelpView
-	currentView       ViewType
+	table    table.Model
+	current  Control
+	cam      *Webcam
+	barWidth int
+	help     help.Model
+	config   ConfigFile
+	status   status
+}
+
+// status is a message shown below the table until it expires.
+type status struct {
+	text  string
+	isErr bool
+	// id tells apart messages so that a timer only clears its own.
+	id int
+}
+
+// clearStatusMsg clears the status if it is still the one with id.
+type clearStatusMsg struct{ id int }
+
+// setStatus shows text below the table for a while.
+func (m *Model) setStatus(text string, isErr bool) tea.Cmd {
+	id := m.status.id + 1
+	m.status = status{text: text, isErr: isErr, id: id}
+	d := statusInfoDuration
+	if isErr {
+		d = statusErrorDuration
+	}
+	return tea.Tick(d, func(time.Time) tea.Msg { return clearStatusMsg{id: id} })
+}
+
+// report shows err, or the info message if err is nil and info is not empty.
+// If both are empty it clears an error left by an earlier action.
+func (m *Model) report(err error, info string) tea.Cmd {
+	switch {
+	case err != nil:
+		return m.setStatus(err.Error(), true)
+	case info != "":
+		return m.setStatus(info, false)
+	case m.status.isErr:
+		m.status = status{id: m.status.id}
+	}
+	return nil
 }
 
 func (m Model) Init() tea.Cmd {
 	return doTick()
-}
-
-func (m Model) GetCurrentView() View {
-	switch m.currentView {
-	case ViewTypeHelp:
-		return m.helpView
-	default:
-		return m.mainView
-	}
-}
-
-func (m Model) View() tea.View {
-	return tea.NewView(m.GetCurrentView().View(m))
-}
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if msg, ok := msg.(tea.KeyPressMsg); ok {
-		k := msg.String()
-		switch k {
-		case "q", "esc", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "?":
-			if m.currentView == ViewTypeMain {
-				m.currentView = ViewTypeHelp
-			} else {
-				m.currentView = ViewTypeMain
-			}
-
-		}
-
-	}
-	return m.GetCurrentView().Update(m, msg)
 }
 
 type TickMsg time.Time
@@ -131,241 +185,200 @@ func doTick() tea.Cmd {
 	})
 }
 
-// MainView .
-type MainView struct{}
-
-var headerStyle = lipgloss.NewStyle().Bold(true)
-
-func (v MainView) View(m Model) string {
+func (m Model) View() tea.View {
 	header := headerStyle.Render(m.cam.Card) +
-		lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" · %s · %s", m.cam.Path, m.cam.Driver))
+		faintStyle.Render(fmt.Sprintf(" · %s · %s", m.cam.Path, m.cam.Driver))
+	tableView := m.table.View()
+	width := lipgloss.Width(tableView)
+
+	var statusText string
+	switch {
+	case m.status.isErr:
+		statusText = statusErrorStyle.Render(m.status.text)
+	default:
+		statusText = statusInfoStyle.Render(m.status.text)
+	}
+	presets := m.presetsView()
+	gap := max(1, width-lipgloss.Width(statusText)-lipgloss.Width(presets))
+	statusLine := statusText + strings.Repeat(" ", gap) + presets
+
+	m.help.SetWidth(width)
+	k := keys
+	if m.help.ShowAll {
+		k.Help.SetHelp("?", "less")
+	}
 	view := lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
-		m.table.View(),
-		m.lastError,
+		tableView,
+		statusLine,
+		m.help.View(k),
 	)
-
-	return lipgloss.NewStyle().MarginLeft(1).Render(view)
-
+	return tea.NewView(lipgloss.NewStyle().MarginLeft(1).Render(view))
 }
 
-func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
-	var (
-		cmd  tea.Cmd
-		cmds []tea.Cmd
-	)
+// presetsView lists the function keys that hold a preset.
+func (m Model) presetsView() string {
+	ids := slices.SortedFunc(maps.Keys(m.config.Presets), func(a, b string) int {
+		ai, _ := strconv.Atoi(a)
+		bi, _ := strconv.Atoi(b)
+		return cmp.Or(cmp.Compare(ai, bi), cmp.Compare(a, b))
+	})
+	if len(ids) == 0 {
+		return faintStyle.Render("no presets")
+	}
+	for i, id := range ids {
+		ids[i] = "F" + id
+	}
+	return faintStyle.Render("presets ") + presetStyle.Render(strings.Join(ids, " "))
+}
 
-	m.table, cmd = m.table.Update(msg)
-	cmds = append(cmds, cmd)
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 
-	for _, e := range m.table.GetLastUpdateUserEvents() {
-		switch e := e.(type) {
-		case table.UserEventHighlightedIndexChanged:
-			selected := m.table.HighlightedRow().Data["control"].(Control)
-			cmds = append(cmds, func() tea.Msg {
-				return selected
-			})
-		case table.UserEventRowSelectToggled:
-			m.lastSelectedEvent = e
+	if msg, ok := msg.(tea.KeyPressMsg); ok {
+		switch {
+		case msg.String() == "ctrl+c":
+			return m, tea.Quit
+		case m.table.GetIsFilterInputFocused():
+			// Everything typed goes to the filter.
+			return m.updateTable(msg)
+		case msg.String() == "esc" && m.table.GetIsFilterActive():
+			// Let the table clear the filter.
+			return m.updateTable(msg)
+		case key.Matches(msg, keys.Quit):
+			return m, tea.Quit
+		case key.Matches(msg, keys.Help):
+			m.help.ShowAll = !m.help.ShowAll
+			return m, nil
+		}
+		if cmd, handled := m.handleKey(msg); handled {
+			cmds = append(cmds, cmd)
+			m.refreshControls()
+			m.updateHighlightStyle()
+			return m, tea.Batch(cmds...)
 		}
 	}
 
-	var updateControls bool
 	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		key := msg.String()
-		switch key {
-		case "u":
-			updateControls = true
-
-		case "`", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			var v int64
-			var err error
-			switch {
-			case key == "`":
-				v = 0
-			case key == "0":
-				v = 10
-			default:
-				v, err = strconv.ParseInt(key, 10, 32)
-			}
-			if err == nil {
-				if m.current.IsMenu() {
-					// Digits pick menu items in order, since menu values
-					// can have gaps.
-					value, ok := m.current.MenuItemValue(int(v))
-					if !ok {
-						m.lastError = fmt.Sprintf("%s has no item %d", m.current.Name, v)
-					} else if err := m.cam.SetControl(m.current.ID, value); err != nil {
-						m.lastError = err.Error()
-					} else {
-						m.lastError = ""
-					}
-				} else if m.current.IsBoolean() {
-					if err := m.cam.SetControl(m.current.ID, int32(v)); err != nil {
-						m.lastError = err.Error()
-					} else {
-						m.lastError = ""
-					}
-
-				} else {
-					percent := float64(v) / 10
-					if err := m.cam.SetControl(m.current.ID, controlValue(m.current, percent)); err != nil {
-						m.lastError = err.Error()
-					} else {
-						m.lastError = ""
-					}
-				}
-				updateControls = true
-			}
-
-		case "left", "h":
-			if err := m.cam.SetControl(m.current.ID, m.current.GetValueDecreasePercent()); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "right", "l":
-			if err := m.cam.SetControl(m.current.ID, m.current.GetValueIncreasePercent()); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "y":
-			if err := m.cam.SetControl(m.current.ID, m.current.GetValueDecreseStep()); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "o":
-			if err := m.cam.SetControl(m.current.ID, m.current.GetValueIncreaseStep()); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "r":
-			if err := m.cam.SetControl(m.current.ID, m.current.Default); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "R":
-			if err := applyPreset(m.cam, defaultPreset(m.cam)); err != nil {
-				m.lastError = err.Error()
-			} else {
-				m.lastError = ""
-			}
-			updateControls = true
-
-		case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12":
-			presetID := strings.TrimPrefix(key, "f")
-
-			preset, ok := m.config.Presets[presetID]
-			if ok {
-				if err := applyPreset(m.cam, preset); err != nil {
-					m.lastError = err.Error()
-				} else {
-					m.lastError = ""
-				}
-				updateControls = true
-			}
-
-		case "alt+f1", "alt+f2", "alt+f3", "alt+f4", "alt+f5", "alt+f6",
-			"alt+f7", "alt+f8", "alt+f9", "alt+f10", "alt+f11", "alt+f12":
-			presetID := strings.TrimPrefix(key, "alt+f")
-			preset, err := newPreset(m.cam)
-			if err != nil {
-				m.lastError = err.Error()
-			}
-			m.config.Presets[presetID] = preset
-
-		}
 	case Control:
 		m.current = msg
-		m.lastError = ""
-	case TickMsg:
-		updateControls = true
-		cmds = append(cmds, doTick())
-
-	}
-
-	if updateControls {
-		controls := m.cam.getControls()
-		var rows []table.Row
-		for _, c := range controls {
-			if c.ID == m.current.ID {
-				m.current = c
-			}
-			rows = append(rows, c.Row(m.barWidth))
+		return m, nil
+	case clearStatusMsg:
+		if msg.id == m.status.id {
+			m.status = status{id: m.status.id}
+			m.updateHighlightStyle()
 		}
-		m.table = m.table.WithRows(rows)
+		return m, nil
+	case TickMsg:
+		m.refreshControls()
+		return m, doTick()
 	}
 
-	if m.lastError != "" {
-		m.table = m.table.HighlightStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(1)))
+	return m.updateTable(msg)
+}
 
-	} else {
-		m.table = m.table.HighlightStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(5)))
+// updateTable passes msg to the table and follows the cursor.
+func (m Model) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	cmds := []tea.Cmd{cmd}
+	for _, e := range m.table.GetLastUpdateUserEvents() {
+		if _, ok := e.(table.UserEventHighlightedIndexChanged); ok {
+			selected := m.table.HighlightedRow().Data["control"].(Control)
+			cmds = append(cmds, func() tea.Msg { return selected })
+		}
 	}
-
 	return m, tea.Batch(cmds...)
 }
 
-//go:embed help.md
-var helpText string
-
-// MainView .
-type HelpView struct {
-	viewport viewport.Model
+// handleKey runs the action bound to msg, if any.
+func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	c := m.current
+	switch {
+	case key.Matches(msg, keys.Increase):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreasePercent()), ""), true
+	case key.Matches(msg, keys.Decrease):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreasePercent()), ""), true
+	case key.Matches(msg, keys.StepUp):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreaseStep()), ""), true
+	case key.Matches(msg, keys.StepDown):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreseStep()), ""), true
+	case key.Matches(msg, keys.QuickSet):
+		return m.report(m.quickSet(msg.String()), ""), true
+	case key.Matches(msg, keys.Reset):
+		err := m.cam.SetControl(c.ID, c.Default)
+		return m.report(err, fmt.Sprintf("%s reset to %s", c.Name, c.formatValue(c.Default))), true
+	case key.Matches(msg, keys.ResetAll):
+		err := applyPreset(m.cam, defaultPreset(m.cam))
+		return m.report(err, "all controls reset to defaults"), true
+	case key.Matches(msg, keys.LoadPreset):
+		id := strings.TrimPrefix(msg.String(), "f")
+		preset, ok := m.config.Presets[id]
+		if !ok {
+			return m.setStatus(fmt.Sprintf("no preset saved on F%s", id), true), true
+		}
+		return m.report(applyPreset(m.cam, preset), "loaded preset F"+id), true
+	case key.Matches(msg, keys.SavePreset):
+		id := strings.TrimPrefix(msg.String(), "alt+f")
+		preset, err := newPreset(m.cam)
+		if err != nil {
+			return m.report(err, ""), true
+		}
+		m.config.Presets[id] = preset
+		if err := SaveConfigFile(m.config); err != nil {
+			return m.report(err, ""), true
+		}
+		return m.report(nil, "saved preset F"+id), true
+	}
+	return nil, false
 }
 
-func (h HelpView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m, nil
+// quickSet sets the current control from a digit key: "`" is 0%, "1" 10%
+// and so on up to "0" for 100%. For menus it picks the item at that index,
+// since menu values can have gaps; for booleans "`" is off and "1" on.
+func (m *Model) quickSet(k string) error {
+	var n int
+	switch k {
+	case "`":
+		n = 0
+	case "0":
+		n = 10
+	default:
+		n, _ = strconv.Atoi(k)
+	}
+	c := m.current
+	switch {
+	case c.IsMenu():
+		value, ok := c.MenuItemValue(n)
+		if !ok {
+			return fmt.Errorf("%s has no item %d", c.Name, n)
+		}
+		return m.cam.SetControl(c.ID, value)
+	case c.IsBoolean():
+		return m.cam.SetControl(c.ID, int32(n))
+	default:
+		return m.cam.SetControl(c.ID, controlValue(c, float64(n)/10))
+	}
 }
 
-func (v HelpView) View(m Model) string {
-	return v.viewport.View()
+// refreshControls reads all controls from the camera.
+func (m *Model) refreshControls() {
+	var rows []table.Row
+	for _, c := range m.cam.getControls() {
+		if c.ID == m.current.ID {
+			m.current = c
+		}
+		rows = append(rows, c.Row(m.barWidth))
+	}
+	m.table = m.table.WithRows(rows)
 }
 
-func newHelpView() (*HelpView, error) {
-	const width = 78
-
-	vp := viewport.New(viewport.WithWidth(width), viewport.WithHeight(20))
-	vp.Style = lipgloss.NewStyle()
-
-	style := "dark"
-	if !lipgloss.HasDarkBackground(os.Stdin, os.Stdout) {
-		style = "light"
+// updateHighlightStyle colors the cursor red while an error is shown.
+func (m *Model) updateHighlightStyle() {
+	if m.status.isErr {
+		m.table = m.table.HighlightStyle(errorHighlight)
+	} else {
+		m.table = m.table.HighlightStyle(highlightStyle)
 	}
-
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(style),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	str, err := renderer.Render(helpText)
-	if err != nil {
-		return nil, err
-	}
-
-	vp.SetContent(str)
-
-	return &HelpView{
-		viewport: vp,
-	}, nil
-
 }
