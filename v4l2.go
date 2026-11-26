@@ -49,6 +49,14 @@ type v4l2Control struct {
 	Value int32
 }
 
+// struct v4l2_querymenu
+type v4l2QueryMenu struct {
+	ID       uint32
+	Index    uint32
+	Name     [32]byte // union with int64 value; the C struct is packed
+	Reserved uint32
+}
+
 // struct v4l2_query_ext_ctrl
 type v4l2QueryExtCtrl struct {
 	ID           uint32
@@ -86,6 +94,7 @@ var (
 	vidiocQueryCap     = ioc(iocRead, 0, unsafe.Sizeof(v4l2Capability{}))
 	vidiocGCtrl        = ioc(iocReadWrite, 27, unsafe.Sizeof(v4l2Control{}))
 	vidiocSCtrl        = ioc(iocReadWrite, 28, unsafe.Sizeof(v4l2Control{}))
+	vidiocQueryMenu    = ioc(iocReadWrite, 37, unsafe.Sizeof(v4l2QueryMenu{}))
 	vidiocQueryExtCtrl = ioc(iocReadWrite, 103, unsafe.Sizeof(v4l2QueryExtCtrl{}))
 )
 
@@ -103,22 +112,22 @@ func ioctl(fd int, req uintptr, arg unsafe.Pointer) error {
 	}
 }
 
-// openDevice opens the V4L2 device at path and checks that it answers
-// VIDIOC_QUERYCAP.
-func openDevice(path string) (int, error) {
+// openDevice opens the V4L2 device at path and returns its capabilities,
+// which also checks that it is a V4L2 device.
+func openDevice(path string) (int, v4l2Capability, error) {
+	var c v4l2Capability
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, &os.PathError{Op: "open", Path: path, Err: err}
+		return -1, c, &os.PathError{Op: "open", Path: path, Err: err}
 	}
-	var c v4l2Capability
 	if err := ioctl(fd, vidiocQueryCap, unsafe.Pointer(&c)); err != nil {
 		unix.Close(fd)
 		if errors.Is(err, unix.ENOTTY) {
-			return -1, fmt.Errorf("%s: not a V4L2 device", path)
+			return -1, c, fmt.Errorf("%s: not a V4L2 device", path)
 		}
-		return -1, &os.PathError{Op: "VIDIOC_QUERYCAP", Path: path, Err: err}
+		return -1, c, &os.PathError{Op: "VIDIOC_QUERYCAP", Path: path, Err: err}
 	}
-	return fd, nil
+	return fd, c, nil
 }
 
 // queryControls returns the device's enabled integer, boolean and menu
@@ -145,6 +154,25 @@ func queryControls(fd int) ([]v4l2QueryExtCtrl, error) {
 			controls = append(controls, q)
 		}
 	}
+}
+
+// queryMenu returns the items of the menu control id, whose values range
+// from minimum to maximum. Drivers may leave gaps in that range; values
+// without an item are left out.
+func queryMenu(fd int, id ControlID, minimum, maximum int32) ([]MenuItem, error) {
+	var items []MenuItem
+	for i := minimum; i <= maximum; i++ {
+		q := v4l2QueryMenu{ID: id, Index: uint32(i)}
+		err := ioctl(fd, vidiocQueryMenu, unsafe.Pointer(&q))
+		if errors.Is(err, unix.EINVAL) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, MenuItem{Value: i, Name: cString(q.Name[:])})
+	}
+	return items, nil
 }
 
 func getControl(fd int, id ControlID) (int32, error) {

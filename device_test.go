@@ -13,7 +13,6 @@ import (
 	"os"
 	"slices"
 	"testing"
-	"unsafe"
 )
 
 const testDeviceEnv = "TEST_WEBCAM_DEVICE"
@@ -60,26 +59,13 @@ var autoPairs = []autoPair{
 		on: []int32{exposureAperturePriority, exposureAuto}},
 }
 
-// struct v4l2_querymenu
-type v4l2QueryMenu struct {
-	ID       uint32
-	Index    uint32
-	Name     [32]byte // union with int64 value; the C struct is packed
-	Reserved uint32
-}
-
-var vidiocQueryMenu = ioc(iocReadWrite, 37, unsafe.Sizeof(v4l2QueryMenu{}))
-
 // menuValues returns the valid values of menu control c. Menus may have gaps
 // between Min and Max.
 func menuValues(t *testing.T, wc *Webcam, c Control) []int32 {
 	t.Helper()
 	var values []int32
-	for i := c.Min; i <= c.Max; i++ {
-		q := v4l2QueryMenu{ID: c.ID, Index: uint32(i)}
-		if err := ioctl(wc.fd, vidiocQueryMenu, unsafe.Pointer(&q)); err == nil {
-			values = append(values, i)
-		}
+	for _, item := range c.Menu {
+		values = append(values, item.Value)
 	}
 	if len(values) == 0 {
 		t.Fatalf("%s: menu has no valid items in [%d, %d]", c.Name, c.Min, c.Max)

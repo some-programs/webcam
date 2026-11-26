@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -31,7 +32,7 @@ type View interface {
 
 func NewModel(cam *Webcam, configFile ConfigFile) Model {
 
-	barWidth := 50
+	barWidth := 40
 	controls := cam.getControls()
 	var rows []table.Row
 	for _, c := range controls {
@@ -48,8 +49,10 @@ func NewModel(cam *Webcam, configFile ConfigFile) Model {
 			table.NewColumn("name", "Name", 30).WithFiltered(true),
 			table.NewColumn("bar", "", barWidth).WithStyle(lipgloss.NewStyle().Align(lipgloss.Center)),
 			table.NewColumn("value", "Value", 7).WithStyle(lipgloss.NewStyle().Align(lipgloss.Left)),
+			table.NewColumn("default", "Default", 7),
 			table.NewColumn("min", "Min", 6),
 			table.NewColumn("max", "Max", 6),
+			table.NewColumn("state", "", 8),
 		}).WithRows(rows).
 			HighlightStyle(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(5))).
 			Filtered(true).
@@ -131,9 +134,14 @@ func doTick() tea.Cmd {
 // MainView .
 type MainView struct{}
 
+var headerStyle = lipgloss.NewStyle().Bold(true)
+
 func (v MainView) View(m Model) string {
+	header := headerStyle.Render(m.cam.Card) +
+		lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" · %s · %s", m.cam.Path, m.cam.Driver))
 	view := lipgloss.JoinVertical(
 		lipgloss.Left,
+		header,
 		m.table.View(),
 		m.lastError,
 	)
@@ -183,7 +191,18 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 				v, err = strconv.ParseInt(key, 10, 32)
 			}
 			if err == nil {
-				if m.current.IsMenu() || m.current.IsBoolean() {
+				if m.current.IsMenu() {
+					// Digits pick menu items in order, since menu values
+					// can have gaps.
+					value, ok := m.current.MenuItemValue(int(v))
+					if !ok {
+						m.lastError = fmt.Sprintf("%s has no item %d", m.current.Name, v)
+					} else if err := m.cam.SetControl(m.current.ID, value); err != nil {
+						m.lastError = err.Error()
+					} else {
+						m.lastError = ""
+					}
+				} else if m.current.IsBoolean() {
 					if err := m.cam.SetControl(m.current.ID, int32(v)); err != nil {
 						m.lastError = err.Error()
 					} else {
@@ -227,6 +246,22 @@ func (v MainView) Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "o":
 			if err := m.cam.SetControl(m.current.ID, m.current.GetValueIncreaseStep()); err != nil {
+				m.lastError = err.Error()
+			} else {
+				m.lastError = ""
+			}
+			updateControls = true
+
+		case "r":
+			if err := m.cam.SetControl(m.current.ID, m.current.Default); err != nil {
+				m.lastError = err.Error()
+			} else {
+				m.lastError = ""
+			}
+			updateControls = true
+
+		case "R":
+			if err := applyPreset(m.cam, defaultPreset(m.cam)); err != nil {
 				m.lastError = err.Error()
 			} else {
 				m.lastError = ""

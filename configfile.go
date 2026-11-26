@@ -87,6 +87,16 @@ func newPreset(wc *Webcam) (ConfigPreset, error) {
 	}, nil
 }
 
+// defaultPreset returns a preset that sets every control to its default
+// value.
+func defaultPreset(wc *Webcam) ConfigPreset {
+	var p ConfigPreset
+	for _, c := range wc.getControls() {
+		p.Values = append(p.Values, ConfigPresetValue{ID: c.ID, Value: c.Default})
+	}
+	return p
+}
+
 // applyPreset sets the camera's controls to the values in preset.
 //
 // Some controls only accept writes while a related automatic mode is off. For

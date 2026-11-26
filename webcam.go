@@ -7,20 +7,31 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/evertras/bubble-table/table"
 	"golang.org/x/sys/unix"
 )
 
 // Control .
 type Control struct {
-	ID    ControlID
-	Name  string
-	Min   int32
-	Max   int32
+	ID      ControlID
+	Name    string
+	Min     int32
+	Max     int32
+	Value   int32
+	Default int32
+	Step    int32
+	Type    controlType
+	Flags   uint32
+	// Menu holds the items of a menu control in value order. Its values may
+	// have gaps.
+	Menu []MenuItem
+}
+
+// MenuItem is one choice of a menu control.
+type MenuItem struct {
 	Value int32
-	Step  int32
-	Type  controlType
-	Flags uint32
+	Name  string
 }
 
 type controlType int
@@ -35,8 +46,10 @@ func (c Control) String() string {
 	return fmt.Sprintf("(id:%v val:%v min:%v max:%v name:%v)", c.ID, c.Value, c.Min, c.Max, c.Name)
 }
 
+// IsBoolean reports whether the control is a boolean or an integer that can
+// only be 0 or 1.
 func (c Control) IsBoolean() bool {
-	return c.Type == c_bool || (c.Min == 0 && c.Max == 1)
+	return c.Type == c_bool || (c.Type == c_int && c.Min == 0 && c.Max == 1)
 }
 
 // IsInactive reports whether the control currently has no effect, typically
@@ -55,6 +68,46 @@ func (c Control) IsMenu() bool {
 
 }
 
+// MenuName returns the name of the menu item for value, or the value as a
+// number if the menu has no such item.
+func (c Control) MenuName(value int32) string {
+	i, ok := c.menuIndex(value)
+	if !ok {
+		return fmt.Sprint(value)
+	}
+	return c.Menu[i].Name
+}
+
+// menuIndex returns the index of the menu item for value.
+func (c Control) menuIndex(value int32) (int, bool) {
+	return slices.BinarySearchFunc(c.Menu, value, func(item MenuItem, v int32) int {
+		return cmp.Compare(item.Value, v)
+	})
+}
+
+// menuStep returns the value of the menu item steps items away from the
+// current value, stopping at the first and last item.
+func (c Control) menuStep(steps int) int32 {
+	if len(c.Menu) == 0 {
+		return min(c.Max, max(c.Min, c.Value+int32(steps)))
+	}
+	// If the current value has no item, i is where it would be.
+	i, ok := c.menuIndex(c.Value)
+	if !ok && steps > 0 {
+		i--
+	}
+	i = min(len(c.Menu)-1, max(0, i+steps))
+	return c.Menu[i].Value
+}
+
+// MenuItemValue returns the value of the menu item at index i.
+func (c Control) MenuItemValue(i int) (int32, bool) {
+	if i < 0 || i >= len(c.Menu) {
+		return 0, false
+	}
+	return c.Menu[i].Value, true
+}
+
 func (c Control) ToggleBoolean() int32 {
 	if c.Value == c.Min {
 		return c.Max
@@ -67,7 +120,7 @@ func (c Control) GetValueIncreaseStep() int32 {
 	case c.IsBoolean():
 		return c.ToggleBoolean()
 	case c.IsMenu():
-		return min(c.Max, c.Value+1)
+		return c.menuStep(1)
 	default:
 		return c.GetStepsChange(1)
 	}
@@ -78,7 +131,7 @@ func (c Control) GetValueDecreseStep() int32 {
 	case c.IsBoolean():
 		return c.ToggleBoolean()
 	case c.IsMenu():
-		return max(c.Min, c.Value-1)
+		return c.menuStep(-1)
 	default:
 		return c.GetStepsChange(-1)
 	}
@@ -101,7 +154,7 @@ func (c Control) GetValueIncreasePercent() int32 {
 	case c.IsBoolean():
 		return c.ToggleBoolean()
 	case c.IsMenu():
-		return min(c.Max, c.Value+1)
+		return c.menuStep(1)
 	default:
 		return c.GetPercentChange(0.02)
 	}
@@ -112,7 +165,7 @@ func (c Control) GetValueDecreasePercent() int32 {
 	case c.IsBoolean():
 		return c.ToggleBoolean()
 	case c.IsMenu():
-		return max(c.Min, c.Value-1)
+		return c.menuStep(-1)
 	default:
 		return c.GetPercentChange(-0.02)
 	}
@@ -136,47 +189,91 @@ func (c Control) GetPercentChange(add float64) int32 {
 }
 
 func (c Control) Percent() float64 {
-	return (float64(c.Value) - float64(c.Min)) / (float64(c.Max) - float64(c.Min))
+	return c.percentOf(c.Value)
 }
+
+func (c Control) percentOf(value int32) float64 {
+	return (float64(value) - float64(c.Min)) / (float64(c.Max) - float64(c.Min))
+}
+
+// formatValue returns value as shown in the bar column.
+func (c Control) formatValue(value int32) string {
+	switch {
+	case c.IsBoolean():
+		if value == 0 {
+			return "OFF"
+		}
+		return "ON"
+	case c.IsMenu():
+		return c.MenuName(value)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+// state returns a short note on why the control can not be changed, if it
+// can not.
+func (c Control) state() string {
+	switch {
+	case c.IsReadOnly():
+		return "readonly"
+	case c.IsInactive():
+		return "inactive"
+	default:
+		return ""
+	}
+}
+
+var unavailableRowStyle = lipgloss.NewStyle().Faint(true)
 
 func (c Control) Row(barWidth int) table.Row {
 	var bar string
-
 	switch {
-	case c.IsBoolean():
-		if c.Value == 0 {
-			bar = "OFF"
-		} else {
-			bar = "ON"
-		}
-	case c.IsMenu():
-		bar = fmt.Sprintf("%v", c.Value)
+	case c.IsBoolean(), c.IsMenu():
+		bar = c.formatValue(c.Value)
 	default:
-		bar = percentBar(barWidth, c.Percent())
+		bar = percentBar(barWidth, c.Percent(), c.percentOf(c.Default))
 	}
-	return table.NewRow(table.RowData{
-		"name":  c.Name,
-		"min":   c.Min,
-		"max":   c.Max,
-		"value": c.Value,
-		"bar":   bar,
+	row := table.NewRow(table.RowData{
+		"name":    c.Name,
+		"min":     c.Min,
+		"max":     c.Max,
+		"value":   c.Value,
+		"default": c.Default,
+		"bar":     bar,
+		"state":   c.state(),
 		// hidden
 		"control": c,
 	})
-
+	if c.state() != "" {
+		row = row.WithStyle(unavailableRowStyle)
+	}
+	return row
 }
 
 func newCam(device string) (*Webcam, error) {
-	fd, err := openDevice(device)
+	fd, c, err := openDevice(device)
 	if err != nil {
 		return nil, err
 	}
-	return &Webcam{fd: fd}, nil
+	return &Webcam{
+		fd:     fd,
+		Path:   device,
+		Card:   cString(c.Card[:]),
+		Driver: cString(c.Driver[:]),
+		menus:  make(map[ControlID][]MenuItem),
+	}, nil
 }
 
 // Webcam is an open V4L2 device.
 type Webcam struct {
-	fd int
+	fd     int
+	Path   string // device file, such as /dev/video0
+	Card   string // device name reported by the driver
+	Driver string
+
+	// menus caches the items of each menu control.
+	menus map[ControlID][]MenuItem
 }
 
 func (wc *Webcam) getControls() []Control {
@@ -190,31 +287,43 @@ func (wc *Webcam) getControls() []Control {
 		if err != nil {
 			panic(err)
 		}
-		var typ controlType
+		c := Control{
+			ID:      q.ID,
+			Name:    cString(q.Name[:]),
+			Min:     int32(q.Minimum),
+			Max:     int32(q.Maximum),
+			Default: int32(q.DefaultValue),
+			Step:    int32(q.Step),
+			Type:    c_int,
+			Flags:   q.Flags,
+			Value:   value,
+		}
 		switch q.Type {
 		case v4l2CtrlTypeBoolean:
-			typ = c_bool
+			c.Type = c_bool
 		case v4l2CtrlTypeMenu:
-			typ = c_menu
-		default:
-			typ = c_int
+			c.Type = c_menu
+			c.Menu = wc.menu(c)
 		}
-		controls = append(controls,
-			Control{
-				ID:    q.ID,
-				Name:  cString(q.Name[:]),
-				Min:   int32(q.Minimum),
-				Max:   int32(q.Maximum),
-				Step:  int32(q.Step),
-				Type:  typ,
-				Flags: q.Flags,
-				Value: value,
-			})
+		controls = append(controls, c)
 	}
 	slices.SortFunc(controls, func(a, b Control) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
 	return controls
+}
+
+// menu returns the items of menu control c.
+func (wc *Webcam) menu(c Control) []MenuItem {
+	if items, ok := wc.menus[c.ID]; ok {
+		return items
+	}
+	items, err := queryMenu(wc.fd, c.ID, c.Min, c.Max)
+	if err != nil {
+		panic(err)
+	}
+	wc.menus[c.ID] = items
+	return items
 }
 
 // GetControl returns the current value of control id.
@@ -231,11 +340,19 @@ func (wc *Webcam) Close() error {
 	return unix.Close(wc.fd)
 }
 
-func percentBar(width int, percent float64) string {
-	w := float64(width)
-	fullSize := int(math.Round(w * percent))
-	emptySize := int(w) - fullSize
-	return strings.Repeat("█", fullSize) + strings.Repeat("░", emptySize)
+// percentBar returns a bar of width cells filled to percent, with a marker
+// at defaultPercent.
+func percentBar(width int, percent, defaultPercent float64) string {
+	if math.IsNaN(percent) {
+		percent = 0
+	}
+	fullSize := min(width, max(0, int(math.Round(float64(width)*percent))))
+	bar := []rune(strings.Repeat("█", fullSize) + strings.Repeat("░", width-fullSize))
+	if !math.IsNaN(defaultPercent) && defaultPercent >= 0 && defaultPercent <= 1 {
+		i := min(width-1, int(float64(width)*defaultPercent))
+		bar[i] = '│'
+	}
+	return string(bar)
 }
 
 func controlValue(control Control, percent float64) int32 {
