@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-	"github.com/evertras/bubble-table/table"
 	"golang.org/x/sys/unix"
 )
 
@@ -222,33 +220,6 @@ func (c Control) state() string {
 	default:
 		return ""
 	}
-}
-
-var unavailableRowStyle = lipgloss.NewStyle().Faint(true)
-
-func (c Control) Row(barWidth int) table.Row {
-	var bar string
-	switch {
-	case c.IsBoolean(), c.IsMenu():
-		bar = c.formatValue(c.Value)
-	default:
-		bar = percentBar(barWidth, c.Percent(), c.percentOf(c.Default))
-	}
-	row := table.NewRow(table.RowData{
-		"name":    c.Name,
-		"min":     c.Min,
-		"max":     c.Max,
-		"value":   c.Value,
-		"default": c.Default,
-		"bar":     bar,
-		"state":   c.state(),
-		// hidden
-		"control": c,
-	})
-	if c.state() != "" {
-		row = row.WithStyle(unavailableRowStyle)
-	}
-	return row
 }
 
 func newCam(device string) (*Webcam, error) {

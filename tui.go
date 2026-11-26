@@ -1,9 +1,7 @@
 package main
 
 import (
-	"cmp"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,17 +9,21 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/evertras/bubble-table/table"
 )
 
-// keyMap holds the main view's key bindings. Moving the cursor and filtering
-// are handled by the table; their bindings here are only for the help.
+// keyMap holds the main view's key bindings.
 type keyMap struct {
-	Move       key.Binding
+	Up         key.Binding
+	Down       key.Binding
+	PageUp     key.Binding
+	PageDown   key.Binding
+	Top        key.Binding
+	Bottom     key.Binding
+	Move       key.Binding // only for the help
 	Filter     key.Binding
-	Adjust     key.Binding
+	Adjust     key.Binding // only for the help
 	Increase   key.Binding
 	Decrease   key.Binding
 	StepUp     key.Binding
@@ -44,6 +46,12 @@ func fKeys(prefix string) []string {
 }
 
 var keys = keyMap{
+	Up:         key.NewBinding(key.WithKeys("up", "k")),
+	Down:       key.NewBinding(key.WithKeys("down", "j")),
+	PageUp:     key.NewBinding(key.WithKeys("pgup")),
+	PageDown:   key.NewBinding(key.WithKeys("pgdown")),
+	Top:        key.NewBinding(key.WithKeys("home", "g")),
+	Bottom:     key.NewBinding(key.WithKeys("end", "G")),
 	Move:       key.NewBinding(key.WithKeys("up", "down", "k", "j"), key.WithHelp("↑/↓", "select")),
 	Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 	Adjust:     key.NewBinding(key.WithKeys("left", "right", "h", "l"), key.WithHelp("←/→", "adjust")),
@@ -72,72 +80,45 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	}
 }
 
-// tableKeyMap is the table's default key map without the bindings that
-// clash with ours.
-func tableKeyMap() table.KeyMap {
-	km := table.DefaultKeyMap()
-	km.PageDown.SetKeys("pgdown")
-	km.PageUp.SetKeys("pgup")
-	km.RowSelectToggle.Unbind()
-	return km
-}
-
 const (
 	statusInfoDuration  = 3 * time.Second
 	statusErrorDuration = 6 * time.Second
 )
 
-var (
-	headerStyle      = lipgloss.NewStyle().Bold(true)
-	faintStyle       = lipgloss.NewStyle().Faint(true)
-	statusInfoStyle  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
-	statusErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)).Bold(true)
-	presetStyle      = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(5))
-	highlightStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(5))
-	errorHighlight   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.ANSIColor(1))
-)
-
 func NewModel(cam *Webcam, configFile ConfigFile) Model {
-	barWidth := 40
-	controls := cam.getControls()
-	var rows []table.Row
-	for _, c := range controls {
-		rows = append(rows, c.Row(barWidth))
+	filter := textinput.New()
+	filter.Prompt = "/ "
+	filter.Placeholder = "filter controls"
+	m := Model{
+		cam:    cam,
+		help:   help.New(),
+		config: configFile,
+		filter: filter,
 	}
-
-	return Model{
-		table: table.New([]table.Column{
-			table.NewColumn("name", "Name", 30).WithFiltered(true),
-			table.NewColumn("bar", "", barWidth).WithStyle(lipgloss.NewStyle().Align(lipgloss.Center)),
-			table.NewColumn("value", "Value", 7).WithStyle(lipgloss.NewStyle().Align(lipgloss.Left)),
-			table.NewColumn("default", "Default", 7),
-			table.NewColumn("min", "Min", 6),
-			table.NewColumn("max", "Max", 6),
-			table.NewColumn("state", "", 8),
-		}).WithRows(rows).
-			WithKeyMap(tableKeyMap()).
-			HighlightStyle(highlightStyle).
-			Filtered(true).
-			Focused(true),
-		cam:      cam,
-		current:  controls[0],
-		barWidth: barWidth,
-		help:     help.New(),
-		config:   configFile,
+	m.refreshControls()
+	if len(m.controls) > 0 {
+		m.selected = m.controls[0].ID
 	}
+	return m
 }
 
 type Model struct {
-	table    table.Model
-	current  Control
 	cam      *Webcam
-	barWidth int
-	help     help.Model
-	config   ConfigFile
-	status   status
+	controls []Control
+	// selected is the ID of the control under the cursor. If the filter
+	// hides it, the first visible control is used instead.
+	selected ControlID
+	// offset is the first list line shown when the list does not fit.
+	offset int
+	filter textinput.Model
+	// width and height are the terminal size, or 0 before it is known.
+	width, height int
+	help          help.Model
+	config        ConfigFile
+	status        status
 }
 
-// status is a message shown below the table until it expires.
+// status is a message shown below the list until it expires.
 type status struct {
 	text  string
 	isErr bool
@@ -148,7 +129,7 @@ type status struct {
 // clearStatusMsg clears the status if it is still the one with id.
 type clearStatusMsg struct{ id int }
 
-// setStatus shows text below the table for a while.
+// setStatus shows text below the list for a while.
 func (m *Model) setStatus(text string, isErr bool) tea.Cmd {
 	id := m.status.id + 1
 	m.status = status{text: text, isErr: isErr, id: id}
@@ -185,130 +166,146 @@ func doTick() tea.Cmd {
 	})
 }
 
-func (m Model) View() tea.View {
-	header := headerStyle.Render(m.cam.Card) +
-		faintStyle.Render(fmt.Sprintf(" · %s · %s", m.cam.Path, m.cam.Driver))
-	tableView := m.table.View()
-	width := lipgloss.Width(tableView)
-
-	var statusText string
-	switch {
-	case m.status.isErr:
-		statusText = statusErrorStyle.Render(m.status.text)
-	default:
-		statusText = statusInfoStyle.Render(m.status.text)
+// visible returns the controls that match the filter.
+func (m Model) visible() []Control {
+	q := strings.ToLower(strings.TrimSpace(m.filter.Value()))
+	if q == "" {
+		return m.controls
 	}
-	presets := m.presetsView()
-	gap := max(1, width-lipgloss.Width(statusText)-lipgloss.Width(presets))
-	statusLine := statusText + strings.Repeat(" ", gap) + presets
-
-	m.help.SetWidth(width)
-	k := keys
-	if m.help.ShowAll {
-		k.Help.SetHelp("?", "less")
-	}
-	view := lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		tableView,
-		statusLine,
-		m.help.View(k),
-	)
-	return tea.NewView(lipgloss.NewStyle().MarginLeft(1).Render(view))
+	return slices.DeleteFunc(slices.Clone(m.controls), func(c Control) bool {
+		return !strings.Contains(strings.ToLower(c.Name), q)
+	})
 }
 
-// presetsView lists the function keys that hold a preset.
-func (m Model) presetsView() string {
-	ids := slices.SortedFunc(maps.Keys(m.config.Presets), func(a, b string) int {
-		ai, _ := strconv.Atoi(a)
-		bi, _ := strconv.Atoi(b)
-		return cmp.Or(cmp.Compare(ai, bi), cmp.Compare(a, b))
-	})
-	if len(ids) == 0 {
-		return faintStyle.Render("no presets")
+// current returns the control under the cursor.
+func (m Model) current() (Control, bool) {
+	visible := m.visible()
+	if i := m.currentIndex(visible); i >= 0 {
+		return visible[i], true
 	}
-	for i, id := range ids {
-		ids[i] = "F" + id
+	return Control{}, false
+}
+
+// currentIndex returns the index of the control under the cursor in
+// visible, or -1 if visible is empty.
+func (m Model) currentIndex(visible []Control) int {
+	if len(visible) == 0 {
+		return -1
 	}
-	return faintStyle.Render("presets ") + presetStyle.Render(strings.Join(ids, " "))
+	return max(0, slices.IndexFunc(visible, func(c Control) bool { return c.ID == m.selected }))
+}
+
+// move moves the cursor by delta controls, stopping at either end.
+func (m *Model) move(delta int) {
+	visible := m.visible()
+	i := m.currentIndex(visible)
+	if i < 0 {
+		return
+	}
+	m.selected = visible[min(len(visible)-1, max(0, i+delta))].ID
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	if msg, ok := msg.(tea.KeyPressMsg); ok {
-		switch {
-		case msg.String() == "ctrl+c":
-			return m, tea.Quit
-		case m.table.GetIsFilterInputFocused():
-			// Everything typed goes to the filter.
-			return m.updateTable(msg)
-		case msg.String() == "esc" && m.table.GetIsFilterActive():
-			// Let the table clear the filter.
-			return m.updateTable(msg)
-		case key.Matches(msg, keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, keys.Help):
-			m.help.ShowAll = !m.help.ShowAll
-			return m, nil
-		}
-		if cmd, handled := m.handleKey(msg); handled {
-			cmds = append(cmds, cmd)
-			m.refreshControls()
-			m.updateHighlightStyle()
-			return m, tea.Batch(cmds...)
-		}
+	m, cmd := m.update(msg)
+	// Keep the cursor on a visible control when the filter hides it.
+	if c, ok := m.current(); ok {
+		m.selected = c.ID
 	}
+	m.scrollToCursor()
+	return m, cmd
+}
 
+func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case Control:
-		m.current = msg
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+
+	case tea.KeyPressMsg:
+		return m.updateKey(msg)
+
 	case clearStatusMsg:
 		if msg.id == m.status.id {
 			m.status = status{id: m.status.id}
-			m.updateHighlightStyle()
 		}
 		return m, nil
+
 	case TickMsg:
 		m.refreshControls()
 		return m, doTick()
 	}
 
-	return m.updateTable(msg)
+	var cmd tea.Cmd
+	m.filter, cmd = m.filter.Update(msg)
+	return m, cmd
 }
 
-// updateTable passes msg to the table and follows the cursor.
-func (m Model) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(msg)
-	cmds := []tea.Cmd{cmd}
-	for _, e := range m.table.GetLastUpdateUserEvents() {
-		if _, ok := e.(table.UserEventHighlightedIndexChanged); ok {
-			selected := m.table.HighlightedRow().Data["control"].(Control)
-			cmds = append(cmds, func() tea.Msg { return selected })
-		}
+func (m Model) updateKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
 	}
-	return m, tea.Batch(cmds...)
+
+	if m.filter.Focused() {
+		switch msg.String() {
+		case "enter":
+			m.filter.Blur()
+		case "esc":
+			m.filter.Reset()
+			m.filter.Blur()
+		case "up":
+			m.move(-1)
+		case "down":
+			m.move(1)
+		default:
+			var cmd tea.Cmd
+			m.filter, cmd = m.filter.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
+
+	switch {
+	case msg.String() == "esc" && m.filter.Value() != "":
+		m.filter.Reset()
+		return m, nil
+	case key.Matches(msg, keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, keys.Help):
+		m.help.ShowAll = !m.help.ShowAll
+		return m, nil
+	case key.Matches(msg, keys.Filter):
+		return m, m.filter.Focus()
+	case key.Matches(msg, keys.Up):
+		m.move(-1)
+		return m, nil
+	case key.Matches(msg, keys.Down):
+		m.move(1)
+		return m, nil
+	case key.Matches(msg, keys.PageUp):
+		m.move(-max(1, m.layout().listHeight-1))
+		return m, nil
+	case key.Matches(msg, keys.PageDown):
+		m.move(max(1, m.layout().listHeight-1))
+		return m, nil
+	case key.Matches(msg, keys.Top):
+		m.move(-len(m.controls))
+		return m, nil
+	case key.Matches(msg, keys.Bottom):
+		m.move(len(m.controls))
+		return m, nil
+	}
+
+	cmd, handled := m.handleKey(msg)
+	if handled {
+		m.refreshControls()
+	}
+	return m, cmd
 }
 
 // handleKey runs the action bound to msg, if any.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
-	c := m.current
+	// Presets do not need a selected control.
 	switch {
-	case key.Matches(msg, keys.Increase):
-		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreasePercent()), ""), true
-	case key.Matches(msg, keys.Decrease):
-		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreasePercent()), ""), true
-	case key.Matches(msg, keys.StepUp):
-		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreaseStep()), ""), true
-	case key.Matches(msg, keys.StepDown):
-		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreseStep()), ""), true
-	case key.Matches(msg, keys.QuickSet):
-		return m.report(m.quickSet(msg.String()), ""), true
-	case key.Matches(msg, keys.Reset):
-		err := m.cam.SetControl(c.ID, c.Default)
-		return m.report(err, fmt.Sprintf("%s reset to %s", c.Name, c.formatValue(c.Default))), true
 	case key.Matches(msg, keys.ResetAll):
 		err := applyPreset(m.cam, defaultPreset(m.cam))
 		return m.report(err, "all controls reset to defaults"), true
@@ -331,13 +328,33 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 		return m.report(nil, "saved preset F"+id), true
 	}
+
+	c, ok := m.current()
+	if !ok {
+		return nil, false
+	}
+	switch {
+	case key.Matches(msg, keys.Increase):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreasePercent()), ""), true
+	case key.Matches(msg, keys.Decrease):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreasePercent()), ""), true
+	case key.Matches(msg, keys.StepUp):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueIncreaseStep()), ""), true
+	case key.Matches(msg, keys.StepDown):
+		return m.report(m.cam.SetControl(c.ID, c.GetValueDecreseStep()), ""), true
+	case key.Matches(msg, keys.QuickSet):
+		return m.report(m.quickSet(c, msg.String()), ""), true
+	case key.Matches(msg, keys.Reset):
+		err := m.cam.SetControl(c.ID, c.Default)
+		return m.report(err, fmt.Sprintf("%s reset to %s", c.Name, c.formatValue(c.Default))), true
+	}
 	return nil, false
 }
 
-// quickSet sets the current control from a digit key: "`" is 0%, "1" 10%
-// and so on up to "0" for 100%. For menus it picks the item at that index,
-// since menu values can have gaps; for booleans "`" is off and "1" on.
-func (m *Model) quickSet(k string) error {
+// quickSet sets c from a digit key: "`" is 0%, "1" 10% and so on up to "0"
+// for 100%. For menus it picks the item at that index, since menu values can
+// have gaps; for booleans "`" is off and "1" on.
+func (m *Model) quickSet(c Control, k string) error {
 	var n int
 	switch k {
 	case "`":
@@ -347,7 +364,6 @@ func (m *Model) quickSet(k string) error {
 	default:
 		n, _ = strconv.Atoi(k)
 	}
-	c := m.current
 	switch {
 	case c.IsMenu():
 		value, ok := c.MenuItemValue(n)
@@ -364,21 +380,28 @@ func (m *Model) quickSet(k string) error {
 
 // refreshControls reads all controls from the camera.
 func (m *Model) refreshControls() {
-	var rows []table.Row
-	for _, c := range m.cam.getControls() {
-		if c.ID == m.current.ID {
-			m.current = c
-		}
-		rows = append(rows, c.Row(m.barWidth))
-	}
-	m.table = m.table.WithRows(rows)
+	m.controls = m.cam.getControls()
 }
 
-// updateHighlightStyle colors the cursor red while an error is shown.
-func (m *Model) updateHighlightStyle() {
-	if m.status.isErr {
-		m.table = m.table.HighlightStyle(errorHighlight)
-	} else {
-		m.table = m.table.HighlightStyle(highlightStyle)
+// scrollToCursor scrolls the list so that the cursor is shown.
+func (m *Model) scrollToCursor() {
+	l := m.layout()
+	lines := m.listLines()
+	cursor := slices.IndexFunc(lines, func(line listLine) bool {
+		return line.isControl && line.control.ID == m.selected
+	})
+	if l.listHeight <= 0 || len(lines) <= l.listHeight {
+		m.offset = 0
+		return
 	}
+	m.offset = min(m.offset, len(lines)-l.listHeight)
+	if cursor >= 0 {
+		if cursor < m.offset {
+			m.offset = cursor
+		}
+		if cursor >= m.offset+l.listHeight {
+			m.offset = cursor - l.listHeight + 1
+		}
+	}
+	m.offset = max(0, m.offset)
 }
