@@ -233,6 +233,8 @@ func newCam(device string) (*Webcam, error) {
 		Card:   cString(c.Card[:]),
 		Driver: cString(c.Driver[:]),
 		menus:  make(map[ControlID][]MenuItem),
+
+		classNames: make(map[uint32]string),
 	}, nil
 }
 
@@ -245,6 +247,23 @@ type Webcam struct {
 
 	// menus caches the items of each menu control.
 	menus map[ControlID][]MenuItem
+	// classNames holds the driver's name for each control class, such as
+	// "Camera Controls".
+	classNames map[uint32]string
+}
+
+// controlClass returns the class of control id, such as
+// V4L2_CTRL_CLASS_CAMERA.
+func controlClass(id ControlID) uint32 {
+	return id & 0x0fff0000
+}
+
+// ClassName returns the name of a control class.
+func (wc *Webcam) ClassName(class uint32) string {
+	if name, ok := wc.classNames[class]; ok {
+		return name
+	}
+	return fmt.Sprintf("Class %#x", class)
 }
 
 func (wc *Webcam) getControls() []Control {
@@ -254,6 +273,10 @@ func (wc *Webcam) getControls() []Control {
 	}
 	var controls []Control
 	for _, q := range queried {
+		if q.Type == v4l2CtrlTypeClass {
+			wc.classNames[controlClass(q.ID)] = cString(q.Name[:])
+			continue
+		}
 		value, err := wc.GetControl(q.ID)
 		if err != nil {
 			panic(err)

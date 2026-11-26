@@ -15,6 +15,7 @@ import (
 
 var (
 	headerStyle      = lipgloss.NewStyle().Bold(true)
+	headingStyle     = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(4))
 	faintStyle       = lipgloss.NewStyle().Faint(true)
 	statusInfoStyle  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
 	statusErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1)).Bold(true)
@@ -63,6 +64,8 @@ func (m Model) layout() layout {
 	l.nameWidth = min(maxNameWidth, l.nameWidth)
 	fixed := cursorWidth + l.nameWidth + gapWidth + gapWidth + valueWidth + 1 + stateWidth
 	l.barWidth = min(maxBarWidth, max(minBarWidth, l.width-fixed))
+	// Keep headings and the status line as wide as the list.
+	l.width = min(l.width, fixed+l.barWidth)
 	l.barX = marginWidth + cursorWidth + l.nameWidth + gapWidth
 
 	// Header, the filter if shown and the line above the list.
@@ -83,15 +86,23 @@ func (m Model) filterHeight() int {
 	return 0
 }
 
-// listLine is one line of the control list.
+// listLine is one line of the control list: a control, or the heading of
+// a control class.
 type listLine struct {
 	isControl bool
 	control   Control
+	heading   string
 }
 
+// listLines returns the visible controls grouped by class.
 func (m Model) listLines() []listLine {
 	var lines []listLine
-	for _, c := range m.visible() {
+	class := uint32(0)
+	for i, c := range m.visible() {
+		if i == 0 || controlClass(c.ID) != class {
+			class = controlClass(c.ID)
+			lines = append(lines, listLine{heading: m.cam.ClassName(class)})
+		}
 		lines = append(lines, listLine{isControl: true, control: c})
 	}
 	return lines
@@ -117,6 +128,10 @@ func (m Model) View() tea.View {
 	lines = append(lines, moreLine("↑", start))
 	current, hasCurrent := m.current()
 	for _, line := range list[start:end] {
+		if !line.isControl {
+			lines = append(lines, headingLine(line.heading, l.width))
+			continue
+		}
 		lines = append(lines, m.controlLine(line.control, hasCurrent && line.control.ID == current.ID, l))
 	}
 	if len(list) == 0 {
@@ -153,6 +168,13 @@ func moreLine(arrow string, n int) string {
 		return ""
 	}
 	return faintStyle.Render(fmt.Sprintf("  %s %d more", arrow, n))
+}
+
+// headingLine renders the heading of a control class.
+func headingLine(name string, width int) string {
+	prefix := "── " + name + " "
+	return headingStyle.Render(prefix) +
+		faintStyle.Render(strings.Repeat("─", max(0, width-ansi.StringWidth(prefix))))
 }
 
 // controlLine renders c as a list line.

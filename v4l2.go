@@ -22,6 +22,7 @@ const (
 	v4l2CtrlTypeInteger = 1
 	v4l2CtrlTypeBoolean = 2
 	v4l2CtrlTypeMenu    = 3
+	v4l2CtrlTypeClass   = 6
 )
 
 // V4L2 control flags (V4L2_CTRL_FLAG_*).
@@ -131,7 +132,8 @@ func openDevice(path string) (int, v4l2Capability, error) {
 }
 
 // queryControls returns the device's enabled integer, boolean and menu
-// controls in driver order.
+// controls in driver order, along with the class entries that name each
+// group of controls.
 func queryControls(fd int) ([]v4l2QueryExtCtrl, error) {
 	var controls []v4l2QueryExtCtrl
 	id := uint32(0)
@@ -150,7 +152,7 @@ func queryControls(fd int) ([]v4l2QueryExtCtrl, error) {
 			continue
 		}
 		switch q.Type {
-		case v4l2CtrlTypeInteger, v4l2CtrlTypeBoolean, v4l2CtrlTypeMenu:
+		case v4l2CtrlTypeInteger, v4l2CtrlTypeBoolean, v4l2CtrlTypeMenu, v4l2CtrlTypeClass:
 			controls = append(controls, q)
 		}
 	}

@@ -398,6 +398,10 @@ func (m *Model) scrollToCursor() {
 	if cursor >= 0 {
 		if cursor < m.offset {
 			m.offset = cursor
+			// Show the heading above the first control of a class.
+			if cursor > 0 && !lines[cursor-1].isControl {
+				m.offset--
+			}
 		}
 		if cursor >= m.offset+l.listHeight {
 			m.offset = cursor - l.listHeight + 1
