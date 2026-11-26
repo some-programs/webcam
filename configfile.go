@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -70,9 +71,15 @@ func LoadConfigFile(path string) (ConfigFile, error) {
 		}
 	}
 
+	return readConfigFile(path, !explicit)
+}
+
+// readConfigFile reads the config file at path. If missingOK is set, a
+// missing file gives an empty config.
+func readConfigFile(path string, missingOK bool) (ConfigFile, error) {
 	config := ConfigFile{path: path}
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) && !explicit {
+	if errors.Is(err, fs.ErrNotExist) && missingOK {
 		return config, nil
 	}
 	if err != nil {
@@ -84,13 +91,55 @@ func LoadConfigFile(path string) (ConfigFile, error) {
 	return config, nil
 }
 
-// SaveConfigFile writes config to the file it was loaded from.
+// ReloadConfigFile reads the file config was loaded from again, to pick up
+// changes made by other programs. A missing file gives an empty config.
+func ReloadConfigFile(config ConfigFile) (ConfigFile, error) {
+	return readConfigFile(config.path, true)
+}
+
+// SavePreset stores preset as name for camera in config's file and returns
+// the config as saved. It reads the file again first, so that presets that
+// other programs saved since config was loaded are kept.
+func SavePreset(config ConfigFile, camera, name string, preset ConfigPreset) (ConfigFile, error) {
+	fresh, err := ReloadConfigFile(config)
+	if err != nil {
+		return config, err
+	}
+	fresh.CameraPresets(camera)[name] = preset
+	if err := SaveConfigFile(fresh); err != nil {
+		return config, err
+	}
+	return fresh, nil
+}
+
+// SaveConfigFile writes config to the file it was loaded from. It writes a
+// new file and renames it over the old one, so that programs reading the
+// file never see it half written.
 func SaveConfigFile(config ConfigFile) error {
 	data, err := toml.Marshal(&config)
 	if err != nil {
 		return fmt.Errorf("could not render config file: %w", err)
 	}
-	if err := os.WriteFile(config.path, data, 0600); err != nil {
+	// Replace the file a symlink points to, not the symlink.
+	path, err := filepath.EvalSymlinks(config.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		path = config.path
+	} else if err != nil {
+		return fmt.Errorf("could not write config file: %w", err)
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".config-*.toml")
+	if err != nil {
+		return fmt.Errorf("could not write config file: %w", err)
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("could not write config file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("could not write config file: %w", err)
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
 		return fmt.Errorf("could not write config file: %w", err)
 	}
 	return nil

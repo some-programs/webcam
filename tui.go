@@ -261,7 +261,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case TickMsg:
 		m.refreshControls()
-		return m, doTick()
+		return m, tea.Batch(m.report(m.reloadConfig(), ""), doTick())
 	}
 
 	var cmd tea.Cmd
@@ -340,6 +340,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.report(err, "all controls reset to defaults"), true
 	case key.Matches(msg, keys.LoadPreset):
 		name := strings.ToUpper(msg.String())
+		if err := m.reloadConfig(); err != nil {
+			return m.report(err, ""), true
+		}
 		preset, ok := m.presets[name]
 		if !ok {
 			return m.setStatus("no preset saved on "+name, true), true
@@ -351,10 +354,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		if err != nil {
 			return m.report(err, ""), true
 		}
-		m.presets[name] = preset
-		if err := SaveConfigFile(m.config); err != nil {
+		config, err := SavePreset(m.config, m.cam.Card, name, preset)
+		if err != nil {
 			return m.report(err, ""), true
 		}
+		m.setConfig(config)
 		return m.report(nil, "saved preset "+name), true
 	}
 
@@ -405,6 +409,22 @@ func (m *Model) quickSet(c Control, k string) error {
 	default:
 		return m.cam.SetControl(c.ID, controlValue(c, float64(n)/10))
 	}
+}
+
+// reloadConfig reads the config file again, so that presets saved by other
+// instances or edited by hand show up.
+func (m *Model) reloadConfig() error {
+	config, err := ReloadConfigFile(m.config)
+	if err != nil {
+		return err
+	}
+	m.setConfig(config)
+	return nil
+}
+
+func (m *Model) setConfig(config ConfigFile) {
+	m.config = config
+	m.presets = config.CameraPresets(m.cam.Card)
 }
 
 // refreshControls reads all controls from the camera.
