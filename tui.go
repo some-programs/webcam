@@ -91,10 +91,11 @@ func NewModel(cam *Webcam, configFile ConfigFile) Model {
 	filter.Prompt = "/ "
 	filter.Placeholder = "filter controls"
 	m := Model{
-		cam:    cam,
-		help:   help.New(),
-		config: configFile,
-		filter: filter,
+		cam:     cam,
+		help:    help.New(),
+		config:  configFile,
+		presets: configFile.CameraPresets(cam.Card),
+		filter:  filter,
 	}
 	m.refreshControls()
 	if len(m.controls) > 0 {
@@ -118,7 +119,9 @@ type Model struct {
 	width, height int
 	help          help.Model
 	config        ConfigFile
-	status        status
+	// presets are the presets of cam, part of config.
+	presets map[string]ConfigPreset
+	status  status
 }
 
 // status is a message shown below the list until it expires.
@@ -337,7 +340,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.report(err, "all controls reset to defaults"), true
 	case key.Matches(msg, keys.LoadPreset):
 		id := strings.TrimPrefix(msg.String(), "f")
-		preset, ok := m.config.Presets[id]
+		preset, ok := m.presets[id]
 		if !ok {
 			return m.setStatus(fmt.Sprintf("no preset saved on F%s", id), true), true
 		}
@@ -348,7 +351,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		if err != nil {
 			return m.report(err, ""), true
 		}
-		m.config.Presets[id] = preset
+		m.presets[id] = preset
 		if err := SaveConfigFile(m.config); err != nil {
 			return m.report(err, ""), true
 		}

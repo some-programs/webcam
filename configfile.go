@@ -15,7 +15,40 @@ import (
 
 // ConfigFile .
 type ConfigFile struct {
+	// Cameras holds the settings of each camera model, keyed by the name
+	// its driver reports, such as "C922 Pro Stream Webcam".
+	Cameras map[string]*CameraConfig `yaml:"cameras,omitempty"`
+
+	// LegacyPresets are presets saved before presets were kept per
+	// camera. They are moved to the first camera opened that has no
+	// presets of its own.
+	LegacyPresets map[string]ConfigPreset `yaml:"presets,omitempty"`
+}
+
+// CameraConfig holds the settings of one camera model.
+type CameraConfig struct {
+	// Presets are keyed by the number of the function key they are on.
 	Presets map[string]ConfigPreset `yaml:"presets"`
+}
+
+// CameraPresets returns the presets of camera, which can be changed in place.
+func (c *ConfigFile) CameraPresets(camera string) map[string]ConfigPreset {
+	if c.Cameras == nil {
+		c.Cameras = make(map[string]*CameraConfig)
+	}
+	cc, ok := c.Cameras[camera]
+	if !ok {
+		cc = &CameraConfig{}
+		c.Cameras[camera] = cc
+	}
+	if len(cc.Presets) == 0 && len(c.LegacyPresets) > 0 {
+		cc.Presets = c.LegacyPresets
+		c.LegacyPresets = nil
+	}
+	if cc.Presets == nil {
+		cc.Presets = make(map[string]ConfigPreset)
+	}
+	return cc.Presets
 }
 
 // ConfigPreset .
@@ -47,9 +80,6 @@ func LoadConfigFile() (ConfigFile, error) {
 		if err := yaml.Unmarshal(configData, &config); err != nil {
 			return ConfigFile{}, fmt.Errorf("error parsing config gile: %w", err)
 		}
-	}
-	if config.Presets == nil {
-		config.Presets = make(map[string]ConfigPreset)
 	}
 	return config, nil
 

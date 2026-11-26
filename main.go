@@ -25,6 +25,15 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if len(configFile.LegacyPresets) > 0 {
+		// Save the presets as this camera's now, so that they are not
+		// moved to another camera later.
+		configFile.CameraPresets(cam.Card)
+		if err := SaveConfigFile(configFile); err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	m := NewModel(cam, configFile)
 	if err != nil {
 		panic(err)
@@ -32,9 +41,6 @@ func main() {
 	if _, err := tea.NewProgram(m).Run(); err != nil {
 		fmt.Println("Oh no!", err)
 		os.Exit(1)
-	}
-	if err := SaveConfigFile(configFile); err != nil {
-		log.Fatal(err)
 	}
 
 }

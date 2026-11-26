@@ -336,7 +336,7 @@ func (m Model) statusLine(width int) string {
 
 // presetsView lists the function keys that hold a preset.
 func (m Model) presetsView() string {
-	ids := slices.SortedFunc(maps.Keys(m.config.Presets), func(a, b string) int {
+	ids := slices.SortedFunc(maps.Keys(m.presets), func(a, b string) int {
 		ai, _ := strconv.Atoi(a)
 		bi, _ := strconv.Atoi(b)
 		return cmp.Or(cmp.Compare(ai, bi), cmp.Compare(a, b))
