@@ -3,7 +3,9 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"image/color"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -197,16 +199,91 @@ func (m Model) controlLine(c Control, selected bool, l layout) string {
 
 	var bar, value string
 	switch {
-	case c.IsBoolean(), c.IsMenu():
-		bar = padRight(c.formatValue(c.Value), l.barWidth)
+	case c.IsBoolean():
+		bar = booleanView(c.Value != c.Min, style)
+	case c.IsMenu():
+		bar = menuView(c, style)
 	default:
-		bar = percentBar(l.barWidth, c.Percent(), c.percentOf(c.Default))
+		fill := barFillColor
+		if selected {
+			fill = barSelectedColor
+		}
+		bar = barView(l.barWidth, c.Percent(), c.percentOf(c.Default), fill, style)
 		value = strconv.Itoa(int(c.Value))
 	}
+	bar += strings.Repeat(" ", max(0, l.barWidth-lipgloss.Width(bar)))
 
 	gap := strings.Repeat(" ", gapWidth)
 	return nameStyle.Render(cursor+padRight(c.Name, l.nameWidth)) +
-		style.Render(gap+bar+gap+padLeft(value, valueWidth)+" "+c.state())
+		style.Render(gap) + bar +
+		style.Render(gap+padLeft(value, valueWidth)+" "+c.state())
+}
+
+var (
+	barFillColor     = lipgloss.ANSIColor(6)
+	barSelectedColor = lipgloss.ANSIColor(5)
+	barTrackColor    = lipgloss.ANSIColor(8)
+	barMarkerColor   = lipgloss.ANSIColor(15)
+	onColor          = lipgloss.ANSIColor(2)
+)
+
+// barEighths are the block characters for 1/8 to 7/8 of a cell.
+var barEighths = []rune("▏▎▍▌▋▊▉")
+
+// barView renders a bar width cells wide filled to percent in fill color on
+// a track, with a marker at defaultPercent. Every cell is rendered with base
+// as well, so that inactive controls look faint.
+func barView(width int, percent, defaultPercent float64, fill color.Color, base lipgloss.Style) string {
+	if math.IsNaN(percent) {
+		percent = 0
+	}
+	eighths := min(width*8, max(0, int(math.Round(percent*float64(width)*8))))
+	full, part := eighths/8, eighths%8
+	marker := -1
+	if !math.IsNaN(defaultPercent) && defaultPercent >= 0 && defaultPercent <= 1 {
+		marker = min(width-1, int(float64(width)*defaultPercent))
+	}
+
+	filled := base.Foreground(fill).Background(barTrackColor)
+	track := base.Background(barTrackColor)
+	var b strings.Builder
+	for i := range width {
+		switch {
+		case i == marker && i < full:
+			b.WriteString(base.Foreground(barMarkerColor).Background(fill).Render("│"))
+		case i == marker:
+			b.WriteString(track.Foreground(barMarkerColor).Render("│"))
+		case i < full:
+			b.WriteString(filled.Render("█"))
+		case i == full && part > 0:
+			b.WriteString(filled.Render(string(barEighths[part-1])))
+		default:
+			b.WriteString(track.Render(" "))
+		}
+	}
+	return b.String()
+}
+
+// booleanView renders a boolean control's state.
+func booleanView(on bool, base lipgloss.Style) string {
+	if on {
+		return base.Foreground(onColor).Render("● on")
+	}
+	return base.Faint(true).Render("○ off")
+}
+
+// menuView renders a menu control's current item between arrows that show
+// whether there are items before and after it.
+func menuView(c Control, base lipgloss.Style) string {
+	arrow := func(s string, ok bool) string {
+		if !ok {
+			return " "
+		}
+		return base.Faint(true).Render(s)
+	}
+	return arrow("‹", c.menuStep(-1) != c.Value) + " " +
+		base.Bold(true).Render(c.MenuName(c.Value)) + " " +
+		arrow("›", c.menuStep(1) != c.Value)
 }
 
 // detailLine describes c in more detail than its list line.

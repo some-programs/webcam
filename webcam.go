@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -199,9 +198,9 @@ func (c Control) formatValue(value int32) string {
 	switch {
 	case c.IsBoolean():
 		if value == 0 {
-			return "OFF"
+			return "off"
 		}
-		return "ON"
+		return "on"
 	case c.IsMenu():
 		return c.MenuName(value)
 	default:
@@ -332,21 +331,6 @@ func (wc *Webcam) SetControl(id ControlID, value int32) error {
 
 func (wc *Webcam) Close() error {
 	return unix.Close(wc.fd)
-}
-
-// percentBar returns a bar of width cells filled to percent, with a marker
-// at defaultPercent.
-func percentBar(width int, percent, defaultPercent float64) string {
-	if math.IsNaN(percent) {
-		percent = 0
-	}
-	fullSize := min(width, max(0, int(math.Round(float64(width)*percent))))
-	bar := []rune(strings.Repeat("█", fullSize) + strings.Repeat("░", width-fullSize))
-	if !math.IsNaN(defaultPercent) && defaultPercent >= 0 && defaultPercent <= 1 {
-		i := min(width-1, int(float64(width)*defaultPercent))
-		bar[i] = '│'
-	}
-	return string(bar)
 }
 
 func controlValue(control Control, percent float64) int32 {
