@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,7 +111,9 @@ type Model struct {
 	selected ControlID
 	// offset is the first list line shown when the list does not fit.
 	offset int
-	filter textinput.Model
+	// dragging is set while the mouse drags the selected control's bar.
+	dragging bool
+	filter   textinput.Model
 	// width and height are the terminal size, or 0 before it is known.
 	width, height int
 	help          help.Model
@@ -223,6 +226,29 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
+
+	case tea.MouseClickMsg:
+		return m.mouseClick(msg.Mouse())
+
+	case tea.MouseMotionMsg:
+		mouse := msg.Mouse()
+		if !m.dragging || mouse.Button != tea.MouseLeft {
+			return m, nil
+		}
+		c, ok := m.current()
+		if !ok {
+			return m, nil
+		}
+		cmd := m.report(m.cam.SetControl(c.ID, m.barValue(c, mouse.X)), "")
+		m.refreshControls()
+		return m, cmd
+
+	case tea.MouseReleaseMsg:
+		m.dragging = false
+		return m, nil
+
+	case tea.MouseWheelMsg:
+		return m.mouseWheel(msg.Mouse())
 
 	case clearStatusMsg:
 		if msg.id == m.status.id {
@@ -408,4 +434,101 @@ func (m *Model) scrollToCursor() {
 		}
 	}
 	m.offset = max(0, m.offset)
+}
+
+// controlAt returns the control on screen row y, if any.
+func (m Model) controlAt(y int) (Control, bool) {
+	l := m.layout()
+	i := y - l.listTop
+	if i < 0 || (l.listHeight > 0 && i >= l.listHeight) {
+		return Control{}, false
+	}
+	lines := m.listLines()
+	i += m.offset
+	if i >= len(lines) || !lines[i].isControl {
+		return Control{}, false
+	}
+	return lines[i].control, true
+}
+
+// onBar reports whether screen column x is within the bars.
+func (m Model) onBar(x int) bool {
+	l := m.layout()
+	return x >= l.barX && x < l.barX+l.barWidth
+}
+
+// barValue returns the value of integer control c that screen column x on
+// its bar stands for, rounded to the control's step.
+func (m Model) barValue(c Control, x int) int32 {
+	l := m.layout()
+	percent := 0.0
+	if l.barWidth > 1 {
+		percent = float64(x-l.barX) / float64(l.barWidth-1)
+	}
+	percent = min(1, max(0, percent))
+	span := float64(c.Max) - float64(c.Min)
+	step := float64(max(1, c.Step))
+	value := float64(c.Min) + math.Round(percent*span/step)*step
+	return int32(min(float64(c.Max), value))
+}
+
+// mouseClick selects the clicked control and, if the click is on its value,
+// changes it: a click on a bar sets the value there and starts a drag, a
+// click on a boolean toggles it, and a click on a menu steps to the previous
+// item on the left arrow or the next item elsewhere.
+func (m Model) mouseClick(mouse tea.Mouse) (Model, tea.Cmd) {
+	if mouse.Button != tea.MouseLeft {
+		return m, nil
+	}
+	c, ok := m.controlAt(mouse.Y)
+	if !ok {
+		return m, nil
+	}
+	m.selected = c.ID
+	if !m.onBar(mouse.X) {
+		return m, nil
+	}
+
+	var value int32
+	switch {
+	case c.IsBoolean():
+		value = c.ToggleBoolean()
+	case c.IsMenu():
+		value = c.menuStep(1)
+		if mouse.X < m.layout().barX+2 {
+			value = c.menuStep(-1)
+		}
+	default:
+		value = m.barValue(c, mouse.X)
+		m.dragging = true
+	}
+	cmd := m.report(m.cam.SetControl(c.ID, value), "")
+	m.refreshControls()
+	return m, cmd
+}
+
+// mouseWheel adjusts the control under the pointer, or moves the cursor if
+// there is none.
+func (m Model) mouseWheel(mouse tea.Mouse) (Model, tea.Cmd) {
+	up := mouse.Button == tea.MouseWheelUp
+	if !up && mouse.Button != tea.MouseWheelDown {
+		return m, nil
+	}
+	c, ok := m.controlAt(mouse.Y)
+	if !ok {
+		if up {
+			m.move(-1)
+		} else {
+			m.move(1)
+		}
+		return m, nil
+	}
+	m.selected = c.ID
+	value := c.GetValueDecreasePercent()
+	if up {
+		value = c.GetValueIncreasePercent()
+	}
+	cmd := m.report(m.cam.SetControl(c.ID, value), "")
+	m.refreshControls()
+	return m, cmd
 }
